@@ -1,0 +1,25 @@
+name: BirjaHW
+version: 3.0
+main: com.example.birjaHW.BirjaHW
+api-version: '1.21'
+author: tushp_
+depend: [Vault]
+softdepend: [Essentials]
+
+commands:
+  birja:
+    description: Открыть биржу праймов
+    usage: /<command> [reload]
+    aliases: [биржа, exchange, обмен, праймы]
+  praims:
+    description: Управление праймами игроков
+    usage: /<command> [give|set|take] <игрок> <количество>
+    aliases: [прайм, прайм, праймы]
+
+permissions:
+  birja.use:
+    description: Использование биржи
+    default: true
+  birja.admin:
+    description: Админские команды биржи
+    default: op
