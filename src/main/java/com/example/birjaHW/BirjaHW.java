@@ -5,6 +5,7 @@ import org.bukkit.Bukkit;
 import org.bukkit.Material;
 import org.bukkit.Sound;
 import org.bukkit.NamespacedKey;
+import org.bukkit.OfflinePlayer;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandExecutor;
 import org.bukkit.command.CommandSender;
@@ -41,6 +42,15 @@ public final class BirjaHW extends JavaPlugin implements CommandExecutor, Listen
     private Map<UUID, Integer> selectedAmount = new HashMap<>();
     // Для хранения выбранной заявки
     private Map<UUID, UUID> selectedOrder = new HashMap<>();
+    
+    // Константы для меню
+    private static final String TITLE_MAIN = "§0§lБИРЖА ПРАЙМОВ";
+    private static final String TITLE_BUY_AMOUNT = "§b§lВыбор количества для покупки";
+    private static final String TITLE_SELL_AMOUNT = "§a§lВыбор количества для продажи";
+    private static final String TITLE_CREATE_BUY = "§b§lСоздать заявку на покупку";
+    private static final String TITLE_CREATE_SELL = "§a§lСоздать заявку на продажу";
+    private static final String TITLE_MY_ORDERS = "§0§lМОИ ЗАЯВКИ";
+
     // Кастомная головка для отображения заявок
     private ItemStack customOrderHead = null;
     // Ключи для PersistentDataContainer
@@ -161,7 +171,6 @@ public final class BirjaHW extends JavaPlugin implements CommandExecutor, Listen
         try {
             getConfig().set("order-head", head);
             saveConfig();
-            // Обновляем кастомную голову в памяти
             customOrderHead = head.clone();
             getLogger().info("Кастомная головка сохранена успешно!");
         } catch (Exception e) {
@@ -217,7 +226,6 @@ public final class BirjaHW extends JavaPlugin implements CommandExecutor, Listen
         Player player = (Player) sender;
 
         if (!player.hasPermission("birja.admin")) {
-            // Открываем биржу если нет прав админа
             openMainMenu(player);
             return true;
         }
@@ -260,7 +268,7 @@ public final class BirjaHW extends JavaPlugin implements CommandExecutor, Listen
     }
 
     private void openMainMenu(Player player) {
-        Inventory inv = Bukkit.createInventory(null, 54, "§6§lБиржа Праймов");
+        Inventory inv = Bukkit.createInventory(null, 54, TITLE_MAIN);
         fillMainMenu(inv, player);
         menuType.put(player.getUniqueId(), "MAIN");
         player.openInventory(inv);
@@ -269,42 +277,36 @@ public final class BirjaHW extends JavaPlugin implements CommandExecutor, Listen
     private void refreshMainMenu(Player player) {
         if (player.getOpenInventory() != null && player.getOpenInventory().getTopInventory().getSize() == 54) {
             Inventory inv = player.getOpenInventory().getTopInventory();
-            // Проверяем, что это наше меню
             String title = ChatColor.stripColor(player.getOpenInventory().getTitle());
-            if (title.equalsIgnoreCase("БИРЖА ПРАЙМОВ")) {
+            if (title.equalsIgnoreCase(ChatColor.stripColor(TITLE_MAIN))) {
                 fillMainMenu(inv, player);
             }
         }
     }
 
     private void fillMainMenu(Inventory inv, Player player) {
-        // Заполняем фон
         for (int i = 0; i < 54; i++) {
             inv.setItem(i, createItem(Material.BLACK_STAINED_GLASS_PANE, " "));
         }
 
         fillOrdersDisplay(inv, player);
 
-        // Декоративная полоса под заявками
         for (int i = 36; i < 45; i++) {
             inv.setItem(i, createItem(Material.BROWN_STAINED_GLASS_PANE, " "));
         }
 
-        double praims = getPraims(player);
+        double praims = getPraims(player.getUniqueId());
         double money = economy.getBalance(player);
         double rate = calculateRate();
 
-        // Мои заявки
         inv.setItem(45, createItem(Material.ENDER_CHEST, "§e§lМои заявки",
                 "§7Активных заявок: §e" + getPlayerOrdersCount(player),
                 "",
                 "§eНажмите для управления"));
 
-        // Декорация
         inv.setItem(46, createItem(Material.BLUE_STAINED_GLASS_PANE, " "));
         inv.setItem(47, createItem(Material.BLUE_STAINED_GLASS_PANE, " "));
 
-        // Продать праймы (создать заявку на продажу)
         inv.setItem(48, createItem(Material.EMERALD_BLOCK, "§a§lПродать праймы",
                 "§7Создать заявку на продажу",
                 "§7Обменять праймы на монетки",
@@ -313,7 +315,6 @@ public final class BirjaHW extends JavaPlugin implements CommandExecutor, Listen
                 "",
                 "§a§l→ Нажмите для создания"));
 
-        // Центр - информация о курсе
         inv.setItem(49, createItem(Material.NETHER_STAR, "§6§lТекущий курс",
                 "§e" + formatNumber(rate) + " монеток §7= §a1 прайм",
                 "",
@@ -321,7 +322,6 @@ public final class BirjaHW extends JavaPlugin implements CommandExecutor, Listen
                 "§7Заявок на продажу: §a" + getOrdersByType(OrderType.SELL),
                 "§7Заявок на покупку: §b" + getOrdersByType(OrderType.BUY)));
 
-        // Купить праймы (создать заявку на покупку)
         inv.setItem(50, createItem(Material.DIAMOND_BLOCK, "§b§lКупить праймы",
                 "§7Создать заявку на покупку",
                 "§7Обменять монетки на праймы",
@@ -330,60 +330,35 @@ public final class BirjaHW extends JavaPlugin implements CommandExecutor, Listen
                 "",
                 "§b§l→ Нажмите для создания"));
 
-        // Декорация
         inv.setItem(51, createItem(Material.BLUE_STAINED_GLASS_PANE, " "));
         inv.setItem(52, createItem(Material.BLUE_STAINED_GLASS_PANE, " "));
 
-        // Закрыть
-        inv.setItem(53, createItem(Material.BARRIER, "§c§lЗакрыть",
-                "§7Выйти из биржи"));
+        inv.setItem(53, createItem(Material.BARRIER, "§c§lЗакрыть", "§7Выйти из биржи"));
     }
 
-    /**
-     * ИСПРАВЛЕНИЕ: Возвращаем правильный ItemStack для каждой заявки
-     * Используем кастомную головку для ВСЕХ заявок (и своих, и чужих)
-     */
     private ItemStack getOrderDisplayItem(boolean isMyOrder, OrderType type) {
-        // Если есть кастомная головка - используем её для ВСЕХ заявок
         if (customOrderHead != null) {
-            // ВАЖНО: Создаем новый клон для каждой заявки
             ItemStack clone = customOrderHead.clone();
             clone.setAmount(1);
             return clone;
         }
-
-        // Если кастомной головки нет - используем стандартные предметы
         if (isMyOrder) {
             return new ItemStack(Material.ENCHANTED_GOLDEN_APPLE);
         }
-
         return new ItemStack(type == OrderType.SELL ? Material.WRITABLE_BOOK : Material.ENCHANTED_BOOK);
     }
 
-    /**
-     * Сортирует заявки по выгодности:
-     * - SELL заявки: сначала с наименьшим курсом (выгоднее купить)
-     * - BUY заявки: сначала с наибольшим курсом (выгоднее продать)
-     */
     private List<Map.Entry<UUID, Order>> getSortedOrders() {
         return activeOrders.entrySet().stream()
                 .sorted((a, b) -> {
                     Order orderA = a.getValue();
                     Order orderB = b.getValue();
-
-                    // Сначала SELL заявки (которые выгоднее для покупателя)
-                    // Внутри SELL - по возрастанию курса (дешевле = лучше)
                     if (orderA.type == OrderType.SELL && orderB.type == OrderType.SELL) {
                         return Double.compare(orderA.rate, orderB.rate);
                     }
-
-                    // Затем BUY заявки (которые выгоднее для продавца)
-                    // Внутри BUY - по убыванию курса (дороже = лучше)
                     if (orderA.type == OrderType.BUY && orderB.type == OrderType.BUY) {
                         return Double.compare(orderB.rate, orderA.rate);
                     }
-
-                    // SELL идут перед BUY
                     if (orderA.type == OrderType.SELL) return -1;
                     return 1;
                 })
@@ -407,7 +382,6 @@ public final class BirjaHW extends JavaPlugin implements CommandExecutor, Listen
             String ownerName = owner != null ? owner.getName() : "§7Неизвестно";
             boolean isMyOrder = order.owner.equals(player.getUniqueId());
 
-            // ИСПРАВЛЕНИЕ: Получаем новый ItemStack для КАЖДОЙ заявки
             ItemStack displayItem = getOrderDisplayItem(isMyOrder, order.type);
             double exchangeAmount = order.amount * order.rate;
 
@@ -446,7 +420,6 @@ public final class BirjaHW extends JavaPlugin implements CommandExecutor, Listen
             meta.setDisplayName((order.type == OrderType.SELL ? "§a§l" : "§b§l") + "Заявка #" + (slot + 1));
             meta.setLore(lore);
 
-            // Сохраняем ID заявки в предмете
             PersistentDataContainer container = meta.getPersistentDataContainer();
             container.set(orderIdKey, PersistentDataType.STRING, entry.getKey().toString());
 
@@ -472,13 +445,11 @@ public final class BirjaHW extends JavaPlugin implements CommandExecutor, Listen
         }
     }
 
-    // ==================== МЕНЮ ВЫБОРА КОЛИЧЕСТВА ДЛЯ ПОКУПКИ ====================
-
     private void openPurchaseAmountMenu(Player player, UUID orderId, Order order) {
         selectedAmount.put(player.getUniqueId(), 1);
         selectedOrder.put(player.getUniqueId(), orderId);
 
-        Inventory inv = Bukkit.createInventory(null, 54, "§b§lВыбор количества для покупки");
+        Inventory inv = Bukkit.createInventory(null, 54, TITLE_BUY_AMOUNT);
         fillPurchaseAmountMenu(inv, player, order);
 
         menuType.put(player.getUniqueId(), "BUY_AMOUNT");
@@ -486,7 +457,6 @@ public final class BirjaHW extends JavaPlugin implements CommandExecutor, Listen
     }
 
     private void fillPurchaseAmountMenu(Inventory inv, Player player, Order order) {
-        // Фон
         for (int i = 0; i < 54; i++) {
             inv.setItem(i, createItem(Material.BLACK_STAINED_GLASS_PANE, " "));
         }
@@ -501,7 +471,6 @@ public final class BirjaHW extends JavaPlugin implements CommandExecutor, Listen
         Player seller = Bukkit.getPlayer(order.owner);
         String sellerName = seller != null ? seller.getName() : "§7Неизвестно";
 
-        // Информация о продавце
         inv.setItem(4, createItem(Material.PLAYER_HEAD, "§e§lИнформация о заявке",
                 "§7Продавец: §f" + sellerName,
                 "§7Доступно: §a" + formatNumber(order.amount) + " праймов",
@@ -509,50 +478,28 @@ public final class BirjaHW extends JavaPlugin implements CommandExecutor, Listen
                 "",
                 "§7Вы можете купить макс: §b" + formatNumber(maxCanBuy) + " праймов"));
 
-        // Кнопки + (зеленые)
         int[] plusSlots = {20, 21, 22, 23, 24};
         int[] plusValues = {1, 5, 10, 50, 100};
-        Material[] plusMaterials = {
-                Material.LIME_STAINED_GLASS_PANE,
-                Material.LIME_STAINED_GLASS,
-                Material.LIME_TERRACOTTA,
-                Material.LIME_CONCRETE,
-                Material.LIME_WOOL
-        };
+        Material[] plusMaterials = {Material.LIME_STAINED_GLASS_PANE, Material.LIME_STAINED_GLASS, Material.LIME_TERRACOTTA, Material.LIME_CONCRETE, Material.LIME_WOOL};
 
         for (int i = 0; i < plusValues.length; i++) {
-            inv.setItem(plusSlots[i], createItem(plusMaterials[i], "§a§l+" + plusValues[i],
-                    "§7Добавить §a" + plusValues[i] + " §7праймов",
-                    "",
-                    "§eКлик чтобы добавить"));
+            inv.setItem(plusSlots[i], createItem(plusMaterials[i], "§a§l+" + plusValues[i], "§7Добавить §a" + plusValues[i] + " §7праймов", "", "§eКлик чтобы добавить"));
         }
 
-        // Текущее выбранное количество (центр)
         inv.setItem(31, createItem(Material.ENCHANTED_BOOK, "§6§lВыбрано: §e" + selectedAmt + " праймов",
                 "§7Стоимость: §b" + formatNumber(totalCost) + " монеток",
                 "§7Ваш баланс: " + (canAfford ? "§a" : "§c") + formatNumber(playerMoney) + " монеток",
                 "",
                 canAfford ? "§a§l✓ Достаточно средств" : "§c§l✗ Недостаточно средств!"));
 
-        // Кнопки - (красные)
         int[] minusSlots = {38, 39, 40, 41, 42};
         int[] minusValues = {1, 5, 10, 50, 100};
-        Material[] minusMaterials = {
-                Material.RED_STAINED_GLASS_PANE,
-                Material.RED_STAINED_GLASS,
-                Material.RED_TERRACOTTA,
-                Material.RED_CONCRETE,
-                Material.RED_WOOL
-        };
+        Material[] minusMaterials = {Material.RED_STAINED_GLASS_PANE, Material.RED_STAINED_GLASS, Material.RED_TERRACOTTA, Material.RED_CONCRETE, Material.RED_WOOL};
 
         for (int i = 0; i < minusValues.length; i++) {
-            inv.setItem(minusSlots[i], createItem(minusMaterials[i], "§c§l-" + minusValues[i],
-                    "§7Убрать §c" + minusValues[i] + " §7праймов",
-                    "",
-                    "§eКлик чтобы убрать"));
+            inv.setItem(minusSlots[i], createItem(minusMaterials[i], "§c§l-" + minusValues[i], "§7Убрать §c" + minusValues[i] + " §7праймов", "", "§eКлик чтобы убрать"));
         }
 
-        // Кнопка купить
         inv.setItem(48, createItem(canAfford ? Material.EMERALD_BLOCK : Material.BARRIER,
                 canAfford ? "§a§l✓ Купить праймы" : "§c§l✗ Недостаточно средств",
                 "§7Количество: §e" + selectedAmt + " праймов",
@@ -560,7 +507,6 @@ public final class BirjaHW extends JavaPlugin implements CommandExecutor, Listen
                 "",
                 canAfford ? "§a§lКлик чтобы купить!" : "§cНужно больше монеток!"));
 
-        // Купить максимум
         if (maxCanBuy > 0) {
             inv.setItem(49, createItem(Material.GOLD_BLOCK, "§6§l⚡ Купить максимум",
                     "§7Купить: §e" + formatNumber(maxCanBuy) + " праймов",
@@ -569,33 +515,16 @@ public final class BirjaHW extends JavaPlugin implements CommandExecutor, Listen
                     "§eКлик для максимальной покупки"));
         }
 
-        // Назад
         inv.setItem(50, createItem(Material.ARROW, "§e§lНазад", "§7Вернуться к бирже"));
     }
 
-    /**
-     * ПОЛНОСТЬЮ ПЕРЕПИСАННАЯ ОБРАБОТКА КЛИКОВ В МЕНЮ ПОКУПКИ
-     */
-    private void handlePurchaseAmountMenuClick(Player player, ItemStack item) {
-        if (item == null || item.getType() == Material.AIR) return;
-        if (!item.hasItemMeta()) return;
-
-        ItemMeta meta = item.getItemMeta();
-        if (meta == null) return;
-
-        String displayName = meta.getDisplayName();
-        if (displayName == null) return;
-
-        String name = ChatColor.stripColor(displayName);
+    private void handlePurchaseAmountMenuClick(Player player, ItemStack item, Inventory inv) {
+        if (item == null || item.getType() == Material.AIR || !item.hasItemMeta()) return;
+        String name = ChatColor.stripColor(item.getItemMeta().getDisplayName());
         Material mat = item.getType();
 
         UUID orderId = selectedOrder.get(player.getUniqueId());
-        if (orderId == null) {
-            player.closeInventory();
-            return;
-        }
-
-        Order order = activeOrders.get(orderId);
+        Order order = orderId != null ? activeOrders.get(orderId) : null;
         if (order == null) {
             player.sendMessage("§cЗаявка больше не существует!");
             player.closeInventory();
@@ -603,839 +532,297 @@ public final class BirjaHW extends JavaPlugin implements CommandExecutor, Listen
             return;
         }
 
-        // НАЗАД - закрываем и открываем главное меню
         if (mat == Material.ARROW || name.toLowerCase().contains("назад")) {
-            selectedAmount.remove(player.getUniqueId());
-            selectedOrder.remove(player.getUniqueId());
             player.closeInventory();
-            Bukkit.getScheduler().runTaskLater(this, () -> {
-                openMainMenu(player);
-            }, 1L);
-            player.playSound(player.getLocation(), Sound.UI_BUTTON_CLICK, 1.0f, 1.0f);
+            Bukkit.getScheduler().runTaskLater(this, () -> openMainMenu(player), 1L);
             return;
         }
 
-        // КУПИТЬ МАКСИМУМ
-        if ((mat == Material.GOLD_BLOCK || name.toLowerCase().contains("максимум")) && name.contains("Купить")) {
+        if (name.contains("Купить максимум") || (mat == Material.GOLD_BLOCK && name.contains("максимум"))) {
             double rate = order.rate;
-            double playerMoney = economy.getBalance(player);
-            int maxCanBuy = (int)Math.min(order.amount, Math.floor(playerMoney / rate));
-
+            int maxCanBuy = (int)Math.min(order.amount, Math.floor(economy.getBalance(player) / rate));
             if (maxCanBuy > 0) {
-                player.closeInventory();
-                Bukkit.getScheduler().runTaskLater(this, () -> {
-                    executePurchase(player, orderId, order, maxCanBuy);
-                }, 1L);
+                executePurchase(player, orderId, order, maxCanBuy);
             } else {
                 player.sendMessage("§c§l✗ Недостаточно монеток!");
-                player.playSound(player.getLocation(), Sound.ENTITY_VILLAGER_NO, 1.0f, 1.0f);
             }
             return;
         }
 
-        // КУПИТЬ (обычная кнопка)
-        if ((mat == Material.EMERALD_BLOCK || mat == Material.BARRIER) && name.toLowerCase().contains("купить")) {
+        if (name.contains("Купить праймы") || (mat == Material.EMERALD_BLOCK && name.contains("Купить"))) {
             int amount = selectedAmount.getOrDefault(player.getUniqueId(), 1);
-            double totalCost = amount * order.rate;
-
-            if (economy.getBalance(player) >= totalCost) {
-                player.closeInventory();
-                Bukkit.getScheduler().runTaskLater(this, () -> {
-                    executePurchase(player, orderId, order, amount);
-                }, 1L);
+            if (economy.getBalance(player) >= amount * order.rate) {
+                executePurchase(player, orderId, order, amount);
             } else {
                 player.sendMessage("§c§l✗ Недостаточно монеток!");
-                player.playSound(player.getLocation(), Sound.ENTITY_VILLAGER_NO, 1.0f, 1.0f);
             }
             return;
         }
 
-        // КНОПКИ + (добавить)
-        if (mat == Material.LIME_STAINED_GLASS_PANE || mat == Material.LIME_STAINED_GLASS ||
-                mat == Material.LIME_TERRACOTTA || mat == Material.LIME_CONCRETE || mat == Material.LIME_WOOL) {
-
-            if (name.startsWith("+")) {
-                try {
-                    String valueStr = name.substring(1).trim();
-                    int value = Integer.parseInt(valueStr);
-                    int current = selectedAmount.getOrDefault(player.getUniqueId(), 1);
-                    int newAmount = Math.min(current + value, (int)order.amount);
-
-                    selectedAmount.put(player.getUniqueId(), newAmount);
-
-                    // Обновляем инвентарь асинхронно
-                    Bukkit.getScheduler().runTask(this, () -> {
-                        Inventory inv = player.getOpenInventory().getTopInventory();
-                        if (inv != null && inv.getSize() == 54) {
-                            fillPurchaseAmountMenu(inv, player, order);
-                        }
-                    });
-
-                    player.playSound(player.getLocation(), Sound.UI_BUTTON_CLICK, 1.0f, 1.2f);
-                } catch (NumberFormatException e) {
-                    getLogger().warning("Ошибка парсинга числа из кнопки +: " + name);
-                }
-            }
-            return;
-        }
-
-        // КНОПКИ - (убрать)
-        if (mat == Material.RED_STAINED_GLASS_PANE || mat == Material.RED_STAINED_GLASS ||
-                mat == Material.RED_TERRACOTTA || mat == Material.RED_CONCRETE || mat == Material.RED_WOOL) {
-
-            if (name.startsWith("-")) {
-                try {
-                    String valueStr = name.substring(1).trim();
-                    int value = Integer.parseInt(valueStr);
-                    int current = selectedAmount.getOrDefault(player.getUniqueId(), 1);
-                    int newAmount = Math.max(1, current - value);
-
-                    selectedAmount.put(player.getUniqueId(), newAmount);
-
-                    // Обновляем инвентарь асинхронно
-                    Bukkit.getScheduler().runTask(this, () -> {
-                        Inventory inv = player.getOpenInventory().getTopInventory();
-                        if (inv != null && inv.getSize() == 54) {
-                            fillPurchaseAmountMenu(inv, player, order);
-                        }
-                    });
-
-                    player.playSound(player.getLocation(), Sound.UI_BUTTON_CLICK, 1.0f, 0.8f);
-                } catch (NumberFormatException e) {
-                    getLogger().warning("Ошибка парсинга числа из кнопки -: " + name);
-                }
-            }
-            return;
+        if (name.startsWith("+")) {
+            try {
+                int val = Integer.parseInt(name.substring(1));
+                int current = selectedAmount.getOrDefault(player.getUniqueId(), 1);
+                selectedAmount.put(player.getUniqueId(), Math.min(current + val, (int)order.amount));
+                fillPurchaseAmountMenu(inv, player, order);
+                player.playSound(player.getLocation(), Sound.UI_BUTTON_CLICK, 1.0f, 1.2f);
+            } catch (Exception ignored) {}
+        } else if (name.startsWith("-")) {
+            try {
+                int val = Integer.parseInt(name.substring(1));
+                int current = selectedAmount.getOrDefault(player.getUniqueId(), 1);
+                selectedAmount.put(player.getUniqueId(), Math.max(1, current - val));
+                fillPurchaseAmountMenu(inv, player, order);
+                player.playSound(player.getLocation(), Sound.UI_BUTTON_CLICK, 1.0f, 0.8f);
+            } catch (Exception ignored) {}
         }
     }
 
     private void executePurchase(Player player, UUID orderId, Order order, int amount) {
-        if (amount <= 0 || amount > order.amount) {
-            player.sendMessage("§cНекорректное количество!");
-            return;
-        }
-
         double totalCost = amount * order.rate;
-
         if (!economy.has(player, totalCost)) {
             player.sendMessage("§c§l✗ Недостаточно монеток!");
-            player.playSound(player.getLocation(), Sound.ENTITY_VILLAGER_NO, 1.0f, 1.0f);
             return;
         }
 
-        // Списываем деньги
         economy.withdrawPlayer(player, totalCost);
+        givePraims(player.getUniqueId(), amount);
+        economy.depositPlayer(Bukkit.getOfflinePlayer(order.owner), totalCost);
 
-        // Даем праймы покупателю
-        givePraims(player, amount);
-
-        // Обновляем заявку
         if (amount >= order.amount) {
-            // Заявка полностью выполнена
-            Player seller = Bukkit.getPlayer(order.owner);
-            if (seller != null && seller.isOnline()) {
-                economy.depositPlayer(seller, totalCost);
-                seller.sendMessage("§a§l✓ Ваша заявка на продажу выполнена!");
-                seller.sendMessage("§7Продано: §e" + formatNumber(order.amount) + " праймов");
-                seller.sendMessage("§7Получено: §b" + formatNumber(totalCost) + " монеток");
-                seller.playSound(seller.getLocation(), Sound.ENTITY_PLAYER_LEVELUP, 1.0f, 1.5f);
-            }
             activeOrders.remove(orderId);
+            notifyOwner(order.owner, "§a§l✓ Ваша заявка на продажу выполнена!", amount, totalCost);
         } else {
-            // Частичное выполнение
             order.amount -= amount;
-            Player seller = Bukkit.getPlayer(order.owner);
-            if (seller != null && seller.isOnline()) {
-                economy.depositPlayer(seller, totalCost);
-                seller.sendMessage("§e§l⚡ Частичная продажа!");
-                seller.sendMessage("§7Продано: §e" + formatNumber(amount) + " праймов");
-                seller.sendMessage("§7Получено: §b" + formatNumber(totalCost) + " монеток");
-                seller.sendMessage("§7Осталось в заявке: §e" + formatNumber(order.amount) + " праймов");
-                seller.playSound(seller.getLocation(), Sound.BLOCK_NOTE_BLOCK_PLING, 1.0f, 1.5f);
-            }
+            notifyOwner(order.owner, "§e§l⚡ Частичная продажа!", amount, totalCost);
         }
 
         saveOrders();
-
-        // Сообщение покупателю
-        player.sendMessage("");
-        player.sendMessage("§a§l✓ ПОКУПКА УСПЕШНА!");
-        player.sendMessage("§7Куплено: §e" + formatNumber(amount) + " праймов");
-        player.sendMessage("§7Потрачено: §b" + formatNumber(totalCost) + " монеток");
-        player.sendMessage("");
+        player.sendMessage("§a§l✓ ПОКУПКА УСПЕШНА! §7Куплено: §e" + amount + " §7за §b" + formatNumber(totalCost));
         player.playSound(player.getLocation(), Sound.ENTITY_PLAYER_LEVELUP, 1.0f, 2.0f);
-
-        // Очищаем данные и возвращаем в меню
-        selectedAmount.remove(player.getUniqueId());
-        selectedOrder.remove(player.getUniqueId());
-        openMainMenu(player);
+        player.closeInventory();
+        Bukkit.getScheduler().runTaskLater(this, () -> openMainMenu(player), 1L);
     }
 
-    // ==================== МЕНЮ ВЫБОРА КОЛИЧЕСТВА ДЛЯ ПРОДАЖИ (BUY ORDER) ====================
+    private void notifyOwner(UUID uuid, String msg, double amount, double money) {
+        Player p = Bukkit.getPlayer(uuid);
+        if (p != null && p.isOnline()) {
+            p.sendMessage("");
+            p.sendMessage(msg);
+            p.sendMessage("§7Количество: §e" + formatNumber(amount));
+            p.sendMessage("§7Сумма: §b" + formatNumber(money));
+            p.playSound(p.getLocation(), Sound.ENTITY_PLAYER_LEVELUP, 1.0f, 1.5f);
+        }
+    }
 
     private void openSellToOrderMenu(Player player, UUID orderId, Order order) {
         selectedAmount.put(player.getUniqueId(), 1);
         selectedOrder.put(player.getUniqueId(), orderId);
-
-        Inventory inv = Bukkit.createInventory(null, 54, "§a§lВыбор количества для продажи");
+        Inventory inv = Bukkit.createInventory(null, 54, TITLE_SELL_AMOUNT);
         fillSellToOrderMenu(inv, player, order);
-
         menuType.put(player.getUniqueId(), "SELL_TO_ORDER");
         player.openInventory(inv);
     }
 
     private void fillSellToOrderMenu(Inventory inv, Player player, Order order) {
-        // Фон
-        for (int i = 0; i < 54; i++) {
-            inv.setItem(i, createItem(Material.BLACK_STAINED_GLASS_PANE, " "));
-        }
-
+        for (int i = 0; i < 54; i++) inv.setItem(i, createItem(Material.BLACK_STAINED_GLASS_PANE, " "));
         int selectedAmt = selectedAmount.getOrDefault(player.getUniqueId(), 1);
         double rate = order.rate;
-        double totalReward = selectedAmt * rate;
-        double playerPraims = getPraims(player);
+        double playerPraims = getPraims(player.getUniqueId());
         boolean canSell = playerPraims >= selectedAmt;
         double maxCanSell = Math.min(order.amount, playerPraims);
 
-        Player buyer = Bukkit.getPlayer(order.owner);
-        String buyerName = buyer != null ? buyer.getName() : "§7Неизвестно";
+        inv.setItem(4, createItem(Material.PLAYER_HEAD, "§e§lИнформация о заявке", "§7Покупатель: §f" + (Bukkit.getOfflinePlayer(order.owner).getName()), "§7Нужно: §a" + formatNumber(order.amount), "§7Курс: §e" + formatNumber(rate), "", "§7Вы можете продать макс: §b" + formatNumber(maxCanSell)));
 
-        // Информация о покупателе
-        inv.setItem(4, createItem(Material.PLAYER_HEAD, "§e§lИнформация о заявке",
-                "§7Покупатель: §f" + buyerName,
-                "§7Нужно: §a" + formatNumber(order.amount) + " праймов",
-                "§7Курс: §e" + formatNumber(rate) + " монеток/прайм",
-                "",
-                "§7Вы можете продать макс: §b" + formatNumber(maxCanSell) + " праймов"));
-
-        // Кнопки + (зеленые)
         int[] plusSlots = {20, 21, 22, 23, 24};
         int[] plusValues = {1, 5, 10, 50, 100};
-        Material[] plusMaterials = {
-                Material.LIME_STAINED_GLASS_PANE,
-                Material.LIME_STAINED_GLASS,
-                Material.LIME_TERRACOTTA,
-                Material.LIME_CONCRETE,
-                Material.LIME_WOOL
-        };
+        Material[] plusMaterials = {Material.LIME_STAINED_GLASS_PANE, Material.LIME_STAINED_GLASS, Material.LIME_TERRACOTTA, Material.LIME_CONCRETE, Material.LIME_WOOL};
+        for (int i = 0; i < plusValues.length; i++) inv.setItem(plusSlots[i], createItem(plusMaterials[i], "§a§l+" + plusValues[i], "§7Добавить §a" + plusValues[i], "", "§eКлик чтобы добавить"));
 
-        for (int i = 0; i < plusValues.length; i++) {
-            inv.setItem(plusSlots[i], createItem(plusMaterials[i], "§a§l+" + plusValues[i],
-                    "§7Добавить §a" + plusValues[i] + " §7праймов",
-                    "",
-                    "§eКлик чтобы добавить"));
-        }
+        inv.setItem(31, createItem(Material.WRITABLE_BOOK, "§6§lВыбрано: §e" + selectedAmt, "§7Вы получите: §b" + formatNumber(selectedAmt * rate), "§7Баланс: " + (canSell ? "§a" : "§c") + formatNumber(playerPraims), "", canSell ? "§a§l✓ Достаточно" : "§c§l✗ Мало"));
 
-        // Текущее выбранное количество (центр)
-        inv.setItem(31, createItem(Material.WRITABLE_BOOK, "§6§lВыбрано: §e" + selectedAmt + " праймов",
-                "§7Вы получите: §b" + formatNumber(totalReward) + " монеток",
-                "§7Ваш баланс: " + (canSell ? "§a" : "§c") + formatNumber(playerPraims) + " праймов",
-                "",
-                canSell ? "§a§l✓ Достаточно праймов" : "§c§l✗ Недостаточно праймов!"));
-
-        // Кнопки - (красные)
         int[] minusSlots = {38, 39, 40, 41, 42};
         int[] minusValues = {1, 5, 10, 50, 100};
-        Material[] minusMaterials = {
-                Material.RED_STAINED_GLASS_PANE,
-                Material.RED_STAINED_GLASS,
-                Material.RED_TERRACOTTA,
-                Material.RED_CONCRETE,
-                Material.RED_WOOL
-        };
+        Material[] minusMaterials = {Material.RED_STAINED_GLASS_PANE, Material.RED_STAINED_GLASS, Material.RED_TERRACOTTA, Material.RED_CONCRETE, Material.RED_WOOL};
+        for (int i = 0; i < minusValues.length; i++) inv.setItem(minusSlots[i], createItem(minusMaterials[i], "§c§l-" + minusValues[i], "§7Убрать §c" + minusValues[i], "", "§eКлик чтобы убрать"));
 
-        for (int i = 0; i < minusValues.length; i++) {
-            inv.setItem(minusSlots[i], createItem(minusMaterials[i], "§c§l-" + minusValues[i],
-                    "§7Убрать §c" + minusValues[i] + " §7праймов",
-                    "",
-                    "§eКлик чтобы убрать"));
-        }
-
-        // Кнопка продать
-        inv.setItem(48, createItem(canSell ? Material.DIAMOND_BLOCK : Material.BARRIER,
-                canSell ? "§a§l✓ Продать праймы" : "§c§l✗ Недостаточно праймов",
-                "§7Количество: §e" + selectedAmt + " праймов",
-                "§7Вы получите: §b" + formatNumber(totalReward) + " монеток",
-                "",
-                canSell ? "§a§lКлик чтобы продать!" : "§cНужно больше праймов!"));
-
-        // Продать максимум
-        if (maxCanSell > 0) {
-            inv.setItem(49, createItem(Material.GOLD_BLOCK, "§6§l⚡ Продать максимум",
-                    "§7Продать: §e" + formatNumber(maxCanSell) + " праймов",
-                    "§7Вы получите: §b" + formatNumber(maxCanSell * rate) + " монеток",
-                    "",
-                    "§eКлик для максимальной продажи"));
-        }
-
-        // Назад
-        inv.setItem(50, createItem(Material.ARROW, "§e§lНазад", "§7Вернуться к бирже"));
+        inv.setItem(48, createItem(canSell ? Material.DIAMOND_BLOCK : Material.BARRIER, canSell ? "§a§l✓ Продать" : "§c§l✗ Мало праймов", "§7Кол-во: §e" + selectedAmt, "§7Сумма: §b" + formatNumber(selectedAmt * rate)));
+        if (maxCanSell > 0) inv.setItem(49, createItem(Material.GOLD_BLOCK, "§6§l⚡ Продать максимум", "§7Продать: §e" + formatNumber(maxCanSell)));
+        inv.setItem(50, createItem(Material.ARROW, "§e§lНазад", "§7К бирже"));
     }
 
-    /**
-     * ПОЛНОСТЬЮ ПЕРЕПИСАННАЯ ОБРАБОТКА КЛИКОВ В МЕНЮ ПРОДАЖИ
-     */
-    private void handleSellToOrderMenuClick(Player player, ItemStack item) {
-        if (item == null || item.getType() == Material.AIR) return;
-        if (!item.hasItemMeta()) return;
-
-        ItemMeta meta = item.getItemMeta();
-        if (meta == null) return;
-
-        String displayName = meta.getDisplayName();
-        if (displayName == null) return;
-
-        String name = ChatColor.stripColor(displayName);
+    private void handleSellToOrderMenuClick(Player player, ItemStack item, Inventory inv) {
+        if (item == null || item.getType() == Material.AIR || !item.hasItemMeta()) return;
+        String name = ChatColor.stripColor(item.getItemMeta().getDisplayName());
         Material mat = item.getType();
-
         UUID orderId = selectedOrder.get(player.getUniqueId());
-        if (orderId == null) {
-            player.closeInventory();
+        Order order = orderId != null ? activeOrders.get(orderId) : null;
+        if (order == null) { player.closeInventory(); return; }
+
+        if (mat == Material.ARROW || name.contains("Назад")) { player.closeInventory(); Bukkit.getScheduler().runTaskLater(this, () -> openMainMenu(player), 1L); return; }
+        if (name.contains("Продать максимум")) {
+            int maxCanSell = (int)Math.min(order.amount, getPraims(player.getUniqueId()));
+            if (maxCanSell > 0) executeSellToOrder(player, orderId, order, maxCanSell);
             return;
         }
-
-        Order order = activeOrders.get(orderId);
-        if (order == null) {
-            player.sendMessage("§cЗаявка больше не существует!");
-            player.closeInventory();
-            openMainMenu(player);
+        if (name.contains("Продать") && mat == Material.DIAMOND_BLOCK) {
+            int amt = selectedAmount.getOrDefault(player.getUniqueId(), 1);
+            if (getPraims(player.getUniqueId()) >= amt) executeSellToOrder(player, orderId, order, amt);
             return;
         }
-
-        // НАЗАД - закрываем и открываем главное меню
-        if (mat == Material.ARROW || name.toLowerCase().contains("назад")) {
-            selectedAmount.remove(player.getUniqueId());
-            selectedOrder.remove(player.getUniqueId());
-            player.closeInventory();
-            Bukkit.getScheduler().runTaskLater(this, () -> {
-                openMainMenu(player);
-            }, 1L);
-            player.playSound(player.getLocation(), Sound.UI_BUTTON_CLICK, 1.0f, 1.0f);
-            return;
-        }
-
-        // ПРОДАТЬ МАКСИМУМ
-        if ((mat == Material.GOLD_BLOCK || name.toLowerCase().contains("максимум")) && name.contains("Продать")) {
-            double playerPraims = getPraims(player);
-            int maxCanSell = (int)Math.min(order.amount, playerPraims);
-
-            if (maxCanSell > 0) {
-                player.closeInventory();
-                Bukkit.getScheduler().runTaskLater(this, () -> {
-                    executeSellToOrder(player, orderId, order, maxCanSell);
-                }, 1L);
-            } else {
-                player.sendMessage("§c§l✗ Недостаточно праймов!");
-                player.playSound(player.getLocation(), Sound.ENTITY_VILLAGER_NO, 1.0f, 1.0f);
-            }
-            return;
-        }
-
-        // ПРОДАТЬ (обычная кнопка)
-        if ((mat == Material.DIAMOND_BLOCK || mat == Material.BARRIER) && name.toLowerCase().contains("продать")) {
-            int amount = selectedAmount.getOrDefault(player.getUniqueId(), 1);
-
-            if (getPraims(player) >= amount) {
-                player.closeInventory();
-                Bukkit.getScheduler().runTaskLater(this, () -> {
-                    executeSellToOrder(player, orderId, order, amount);
-                }, 1L);
-            } else {
-                player.sendMessage("§c§l✗ Недостаточно праймов!");
-                player.playSound(player.getLocation(), Sound.ENTITY_VILLAGER_NO, 1.0f, 1.0f);
-            }
-            return;
-        }
-
-        // КНОПКИ + (добавить)
-        if (mat == Material.LIME_STAINED_GLASS_PANE || mat == Material.LIME_STAINED_GLASS ||
-                mat == Material.LIME_TERRACOTTA || mat == Material.LIME_CONCRETE || mat == Material.LIME_WOOL) {
-
-            if (name.startsWith("+")) {
-                try {
-                    String valueStr = name.substring(1).trim();
-                    int value = Integer.parseInt(valueStr);
-                    int current = selectedAmount.getOrDefault(player.getUniqueId(), 1);
-                    int newAmount = Math.min(current + value, (int)order.amount);
-
-                    selectedAmount.put(player.getUniqueId(), newAmount);
-
-                    // Обновляем инвентарь асинхронно
-                    Bukkit.getScheduler().runTask(this, () -> {
-                        Inventory inv = player.getOpenInventory().getTopInventory();
-                        if (inv != null && inv.getSize() == 54) {
-                            fillSellToOrderMenu(inv, player, order);
-                        }
-                    });
-
-                    player.playSound(player.getLocation(), Sound.UI_BUTTON_CLICK, 1.0f, 1.2f);
-                } catch (NumberFormatException e) {
-                    getLogger().warning("Ошибка парсинга числа из кнопки +: " + name);
-                }
-            }
-            return;
-        }
-
-        // КНОПКИ - (убрать)
-        if (mat == Material.RED_STAINED_GLASS_PANE || mat == Material.RED_STAINED_GLASS ||
-                mat == Material.RED_TERRACOTTA || mat == Material.RED_CONCRETE || mat == Material.RED_WOOL) {
-
-            if (name.startsWith("-")) {
-                try {
-                    String valueStr = name.substring(1).trim();
-                    int value = Integer.parseInt(valueStr);
-                    int current = selectedAmount.getOrDefault(player.getUniqueId(), 1);
-                    int newAmount = Math.max(1, current - value);
-
-                    selectedAmount.put(player.getUniqueId(), newAmount);
-
-                    // Обновляем инвентарь асинхронно
-                    Bukkit.getScheduler().runTask(this, () -> {
-                        Inventory inv = player.getOpenInventory().getTopInventory();
-                        if (inv != null && inv.getSize() == 54) {
-                            fillSellToOrderMenu(inv, player, order);
-                        }
-                    });
-
-                    player.playSound(player.getLocation(), Sound.UI_BUTTON_CLICK, 1.0f, 0.8f);
-                } catch (NumberFormatException e) {
-                    getLogger().warning("Ошибка парсинга числа из кнопки -: " + name);
-                }
-            }
-            return;
+        if (name.startsWith("+")) {
+            try {
+                int val = Integer.parseInt(name.substring(1));
+                selectedAmount.put(player.getUniqueId(), Math.min(selectedAmount.getOrDefault(player.getUniqueId(), 1) + val, (int)order.amount));
+                fillSellToOrderMenu(inv, player, order);
+            } catch (Exception ignored) {}
+        } else if (name.startsWith("-")) {
+            try {
+                int val = Integer.parseInt(name.substring(1));
+                selectedAmount.put(player.getUniqueId(), Math.max(1, selectedAmount.getOrDefault(player.getUniqueId(), 1) - val));
+                fillSellToOrderMenu(inv, player, order);
+            } catch (Exception ignored) {}
         }
     }
 
     private void executeSellToOrder(Player player, UUID orderId, Order order, int amount) {
-        if (amount <= 0 || amount > order.amount) {
-            player.sendMessage("§cНекорректное количество!");
-            return;
-        }
-
         double totalReward = amount * order.rate;
-
-        if (getPraims(player) < amount) {
-            player.sendMessage("§c§l✗ Недостаточно праймов!");
-            player.playSound(player.getLocation(), Sound.ENTITY_VILLAGER_NO, 1.0f, 1.0f);
-            return;
-        }
-
-        // Списываем праймы у продавца
-        takePraims(player, amount);
-
-        // Даем монетки продавцу
+        if (!takePraims(player.getUniqueId(), amount)) return;
         economy.depositPlayer(player, totalReward);
+        givePraims(order.owner, amount);
 
-        // Обновляем заявку
         if (amount >= order.amount) {
-            // Заявка полностью выполнена
-            Player buyer = Bukkit.getPlayer(order.owner);
-            if (buyer != null && buyer.isOnline()) {
-                givePraims(buyer, (int)order.amount);
-                buyer.sendMessage("§a§l✓ Ваша заявка на покупку выполнена!");
-                buyer.sendMessage("§7Куплено: §e" + formatNumber(order.amount) + " праймов");
-                buyer.sendMessage("§7Потрачено: §b" + formatNumber(totalReward) + " монеток");
-                buyer.playSound(buyer.getLocation(), Sound.ENTITY_PLAYER_LEVELUP, 1.0f, 1.5f);
-            }
             activeOrders.remove(orderId);
+            notifyOwner(order.owner, "§a§l✓ Ваша заявка на покупку выполнена!", amount, totalReward);
         } else {
-            // Частичное выполнение
             order.amount -= amount;
-            Player buyer = Bukkit.getPlayer(order.owner);
-            if (buyer != null && buyer.isOnline()) {
-                givePraims(buyer, amount);
-                buyer.sendMessage("§e§l⚡ Частичная покупка!");
-                buyer.sendMessage("§7Куплено: §e" + formatNumber(amount) + " праймов");
-                buyer.sendMessage("§7Потрачено: §b" + formatNumber(totalReward) + " монеток");
-                buyer.sendMessage("§7Осталось купить: §e" + formatNumber(order.amount) + " праймов");
-                buyer.playSound(buyer.getLocation(), Sound.BLOCK_NOTE_BLOCK_PLING, 1.0f, 1.5f);
-            }
+            notifyOwner(order.owner, "§e§l⚡ Частичная покупка!", amount, totalReward);
         }
-
         saveOrders();
-
-        // Сообщение продавцу
-        player.sendMessage("");
         player.sendMessage("§a§l✓ ПРОДАЖА УСПЕШНА!");
-        player.sendMessage("§7Продано: §e" + formatNumber(amount) + " праймов");
-        player.sendMessage("§7Получено: §b" + formatNumber(totalReward) + " монеток");
-        player.sendMessage("");
-        player.playSound(player.getLocation(), Sound.ENTITY_PLAYER_LEVELUP, 1.0f, 2.0f);
-
-        // Очищаем данные и возвращаем в меню
-        selectedAmount.remove(player.getUniqueId());
-        selectedOrder.remove(player.getUniqueId());
-        openMainMenu(player);
+        player.closeInventory();
+        Bukkit.getScheduler().runTaskLater(this, () -> openMainMenu(player), 1L);
     }
 
-    // ==================== МЕНЮ СОЗДАНИЯ ЗАЯВОК ====================
-
     private void openPurchaseMenu(Player player) {
-        Inventory inv = Bukkit.createInventory(null, 54, "§b§lСоздать заявку на покупку");
-
+        Inventory inv = Bukkit.createInventory(null, 54, TITLE_CREATE_BUY);
         double balance = economy.getBalance(player);
         double rate = calculateRate();
-
-        // Фон
-        for (int i = 0; i < 54; i++) {
-            inv.setItem(i, createItem(Material.CYAN_STAINED_GLASS_PANE, " "));
-        }
-
-        // Информация о балансе
-        inv.setItem(4, createItem(Material.GOLD_INGOT, "§6§lВаш баланс",
-                "§7Монетки: §b" + formatNumber(balance),
-                "",
-                "§7Текущий курс:",
-                "§e" + formatNumber(rate) + " монеток §7= §a1 прайм"));
-
-        // Варианты количества
-        double[] praimsAmounts = {1, 5, 10, 50, 100, 500, 1000, 5000};
+        for (int i = 0; i < 54; i++) inv.setItem(i, createItem(Material.CYAN_STAINED_GLASS_PANE, " "));
+        inv.setItem(4, createItem(Material.GOLD_INGOT, "§6§lВаш баланс", "§7Монетки: §b" + formatNumber(balance), "", "§7Курс: §e" + formatNumber(rate)));
+        double[] amounts = {1, 5, 10, 50, 100, 500, 1000, 5000};
         int[] slots = {20, 21, 22, 23, 24, 29, 30, 31};
-
-        for (int i = 0; i < praimsAmounts.length; i++) {
-            inv.setItem(slots[i], createBuyAmountItem(praimsAmounts[i], rate, balance));
-        }
-
-        // Кнопка назад
-        inv.setItem(49, createItem(Material.ARROW, "§e§lНазад", "§7Вернуться в главное меню"));
-
+        for (int i = 0; i < amounts.length; i++) inv.setItem(slots[i], createBuyAmountItem(amounts[i], rate, balance));
+        inv.setItem(49, createItem(Material.ARROW, "§e§lНазад"));
         menuType.put(player.getUniqueId(), "BUY");
         player.openInventory(inv);
     }
 
     private void openSellMenu(Player player) {
-        Inventory inv = Bukkit.createInventory(null, 54, "§a§lСоздать заявку на продажу");
-
-        double balance = getPraims(player);
+        Inventory inv = Bukkit.createInventory(null, 54, TITLE_CREATE_SELL);
+        double balance = getPraims(player.getUniqueId());
         double rate = calculateRate();
-
-        // Фон
-        for (int i = 0; i < 54; i++) {
-            inv.setItem(i, createItem(Material.GREEN_STAINED_GLASS_PANE, " "));
-        }
-
-        // Информация о балансе
-        inv.setItem(4, createItem(Material.DIAMOND, "§6§lВаш баланс",
-                "§7Праймы: §a" + formatNumber(balance),
-                "",
-                "§7Текущий курс:",
-                "§e" + formatNumber(rate) + " монеток §7= §a1 прайм"));
-
-        // Варианты количества
-        double[] praimsAmounts = {1, 5, 10, 50, 100, 500, 1000, 5000};
+        for (int i = 0; i < 54; i++) inv.setItem(i, createItem(Material.GREEN_STAINED_GLASS_PANE, " "));
+        inv.setItem(4, createItem(Material.DIAMOND, "§6§lВаш баланс", "§7Праймы: §a" + formatNumber(balance), "", "§7Курс: §e" + formatNumber(rate)));
+        double[] amounts = {1, 5, 10, 50, 100, 500, 1000, 5000};
         int[] slots = {20, 21, 22, 23, 24, 29, 30, 31};
-
-        for (int i = 0; i < praimsAmounts.length; i++) {
-            inv.setItem(slots[i], createSellAmountItem(praimsAmounts[i], rate, balance));
-        }
-
-        // Кнопка назад
-        inv.setItem(49, createItem(Material.ARROW, "§e§lНазад", "§7Вернуться в главное меню"));
-
+        for (int i = 0; i < amounts.length; i++) inv.setItem(slots[i], createSellAmountItem(amounts[i], rate, balance));
+        inv.setItem(49, createItem(Material.ARROW, "§e§lНазад"));
         menuType.put(player.getUniqueId(), "SELL");
         player.openInventory(inv);
     }
 
     private void openMyOrdersMenu(Player player) {
-        Inventory inv = Bukkit.createInventory(null, 54, "§e§lМои заявки");
-
-        // Фон
-        for (int i = 0; i < 54; i++) {
-            inv.setItem(i, createItem(Material.GRAY_STAINED_GLASS_PANE, " "));
-        }
-
-        List<Map.Entry<UUID, Order>> playerOrders = activeOrders.entrySet().stream()
-                .filter(entry -> entry.getValue().owner.equals(player.getUniqueId()))
-                .collect(Collectors.toList());
-
+        Inventory inv = Bukkit.createInventory(null, 54, TITLE_MY_ORDERS);
+        for (int i = 0; i < 54; i++) inv.setItem(i, createItem(Material.GRAY_STAINED_GLASS_PANE, " "));
+        List<Map.Entry<UUID, Order>> playerOrders = activeOrders.entrySet().stream().filter(entry -> entry.getValue().owner.equals(player.getUniqueId())).collect(Collectors.toList());
         if (playerOrders.isEmpty()) {
-            inv.setItem(22, createItem(Material.BARRIER, "§c§lНет активных заявок",
-                    "§7У вас пока нет заявок на бирже",
-                    "",
-                    "§7Создайте заявку через главное меню"));
+            inv.setItem(22, createItem(Material.BARRIER, "§c§lНет активных заявок"));
         } else {
             int slot = 20;
             for (Map.Entry<UUID, Order> entry : playerOrders) {
                 if (slot > 34) break;
-
                 Order order = entry.getValue();
-                double exchangeAmount = order.amount * order.rate;
-
-                Material mat = order.type == OrderType.SELL ? Material.EMERALD_BLOCK : Material.DIAMOND_BLOCK;
-
-                ItemStack item = createItem(mat,
-                        (order.type == OrderType.SELL ? "§a§lПродажа праймов" : "§b§lПокупка праймов"),
-                        order.type == OrderType.SELL ?
-                                "§7Продаю: §a" + formatNumber(order.amount) + " праймов" :
-                                "§7Покупаю: §a" + formatNumber(order.amount) + " праймов",
-                        order.type == OrderType.SELL ?
-                                "§7Получу: §b" + formatNumber(exchangeAmount) + " монеток" :
-                                "§7Плачу: §b" + formatNumber(exchangeAmount) + " монеток",
-                        "",
-                        "§7Курс: §e" + formatNumber(order.rate) + " монеток за 1 прайм",
-                        "",
-                        "§c§l✖ ЛКМ §7- Отменить заявку");
-
-                // Сохраняем ID заявки
+                ItemStack item = createItem(order.type == OrderType.SELL ? Material.EMERALD_BLOCK : Material.DIAMOND_BLOCK, (order.type == OrderType.SELL ? "§a§lПродажа" : "§b§lПокупка"), "§7Кол-во: §e" + formatNumber(order.amount), "§7Курс: §e" + formatNumber(order.rate), "", "§c§l✖ ЛКМ §7- Отменить");
                 ItemMeta meta = item.getItemMeta();
                 meta.getPersistentDataContainer().set(orderIdKey, PersistentDataType.STRING, entry.getKey().toString());
                 item.setItemMeta(meta);
-
                 inv.setItem(slot, item);
-                slot++;
-                if (slot % 9 == 7) slot += 4; // Переход на следующую строку
+                slot++; if (slot % 9 == 7) slot += 4;
             }
         }
-
-        inv.setItem(49, createItem(Material.ARROW, "§e§lНазад", "§7Вернуться в главное меню"));
-
+        inv.setItem(49, createItem(Material.ARROW, "§e§lНазад"));
         menuType.put(player.getUniqueId(), "MY_ORDERS");
         player.openInventory(inv);
     }
 
-    // ==================== ОБРАБОТЧИКИ КЛИКОВ ====================
-
     @EventHandler
     public void onInventoryClick(InventoryClickEvent e) {
         if (!(e.getWhoClicked() instanceof Player)) return;
-
         Player player = (Player) e.getWhoClicked();
-
         if (e.getView() == null || e.getView().getTitle() == null) return;
-
         String title = ChatColor.stripColor(e.getView().getTitle());
 
-        // Проверяем наши меню
-        if (!title.equalsIgnoreCase("ВЫБОР КОЛИЧЕСТВА ДЛЯ ПОКУПКИ")
-                && !title.equalsIgnoreCase("ВЫБОР КОЛИЧЕСТВА ДЛЯ ПРОДАЖИ")
-                && !title.equalsIgnoreCase("СОЗДАТЬ ЗАЯВКУ НА ПОКУПКУ")
-                && !title.equalsIgnoreCase("СОЗДАТЬ ЗАЯВКУ НА ПРОДАЖУ")
-                && !title.equalsIgnoreCase("БИРЖА ПРАЙМОВ")
-                && !title.equalsIgnoreCase("МОИ ЗАЯВКИ")) {
-            return;
+        boolean our = false;
+        if (title.equalsIgnoreCase(ChatColor.stripColor(TITLE_MAIN)) || title.equalsIgnoreCase(ChatColor.stripColor(TITLE_BUY_AMOUNT)) ||
+            title.equalsIgnoreCase(ChatColor.stripColor(TITLE_SELL_AMOUNT)) || title.equalsIgnoreCase(ChatColor.stripColor(TITLE_CREATE_BUY)) ||
+            title.equalsIgnoreCase(ChatColor.stripColor(TITLE_CREATE_SELL)) || title.equalsIgnoreCase(ChatColor.stripColor(TITLE_MY_ORDERS))) {
+            our = true;
         }
-
+        if (!our) return;
         e.setCancelled(true);
-
-        if (e.getClickedInventory() == null) return;
-        if (e.getClickedInventory().equals(player.getInventory())) return;
-
+        if (e.getClickedInventory() == null || e.getClickedInventory().equals(player.getInventory())) return;
         ItemStack item = e.getCurrentItem();
         if (item == null || item.getType() == Material.AIR) return;
 
-        // Роутинг по меню
-        if (title.equalsIgnoreCase("ВЫБОР КОЛИЧЕСТВА ДЛЯ ПОКУПКИ")) {
-            handlePurchaseAmountMenuClick(player, item);
-            return;
-        }
-
-        if (title.equalsIgnoreCase("ВЫБОР КОЛИЧЕСТВА ДЛЯ ПРОДАЖИ")) {
-            handleSellToOrderMenuClick(player, item);
-            return;
-        }
-
-        if (title.equalsIgnoreCase("СОЗДАТЬ ЗАЯВКУ НА ПОКУПКУ")) {
-            handleBuyMenuClick(player, item);
-            return;
-        }
-
-        if (title.equalsIgnoreCase("СОЗДАТЬ ЗАЯВКУ НА ПРОДАЖУ")) {
-            handleSellMenuClick(player, item);
-            return;
-        }
-
-        if (title.equalsIgnoreCase("БИРЖА ПРАЙМОВ")) {
-            handleMainMenuClick(player, item);
-            return;
-        }
-
-        if (title.equalsIgnoreCase("МОИ ЗАЯВКИ")) {
-            handleMyOrdersClick(player, item);
-        }
+        if (title.equalsIgnoreCase(ChatColor.stripColor(TITLE_BUY_AMOUNT))) handlePurchaseAmountMenuClick(player, item, e.getClickedInventory());
+        else if (title.equalsIgnoreCase(ChatColor.stripColor(TITLE_SELL_AMOUNT))) handleSellToOrderMenuClick(player, item, e.getClickedInventory());
+        else if (title.equalsIgnoreCase(ChatColor.stripColor(TITLE_CREATE_BUY))) handleBuyMenuClick(player, item);
+        else if (title.equalsIgnoreCase(ChatColor.stripColor(TITLE_CREATE_SELL))) handleSellMenuClick(player, item);
+        else if (title.equalsIgnoreCase(ChatColor.stripColor(TITLE_MAIN))) handleMainMenuClick(player, item);
+        else if (title.equalsIgnoreCase(ChatColor.stripColor(TITLE_MY_ORDERS))) handleMyOrdersClick(player, item);
     }
 
     private void handleMainMenuClick(Player player, ItemStack item) {
-        if (item.getType() == Material.BARRIER) {
-            player.closeInventory();
-            player.playSound(player.getLocation(), Sound.BLOCK_CHEST_CLOSE, 1.0f, 1.0f);
-        } else if (item.getType() == Material.EMERALD_BLOCK) {
-            if (item.hasItemMeta() && item.getItemMeta().getDisplayName().contains("Продать")) {
-                openSellMenu(player);
-                player.playSound(player.getLocation(), Sound.UI_BUTTON_CLICK, 1.0f, 1.0f);
-            }
-        } else if (item.getType() == Material.DIAMOND_BLOCK) {
-            if (item.hasItemMeta() && item.getItemMeta().getDisplayName().contains("Купить")) {
-                openPurchaseMenu(player);
-                player.playSound(player.getLocation(), Sound.UI_BUTTON_CLICK, 1.0f, 1.0f);
-            }
-        } else if (item.getType() == Material.ENDER_CHEST) {
-            openMyOrdersMenu(player);
-            player.playSound(player.getLocation(), Sound.BLOCK_ENDER_CHEST_OPEN, 1.0f, 1.0f);
-        } else if (item.getType() == Material.ENCHANTED_GOLDEN_APPLE) {
-            // Это своя заявка - открываем меню своих заявок
-            openMyOrdersMenu(player);
-            player.playSound(player.getLocation(), Sound.UI_BUTTON_CLICK, 1.0f, 1.0f);
-        } else {
-            // Проверяем, это клик по заявке
-            handleOrderClick(player, item);
-        }
+        if (item.getType() == Material.BARRIER) player.closeInventory();
+        else if (item.getType() == Material.EMERALD_BLOCK) openSellMenu(player);
+        else if (item.getType() == Material.DIAMOND_BLOCK) openPurchaseMenu(player);
+        else if (item.getType() == Material.ENDER_CHEST || item.getType() == Material.ENCHANTED_GOLDEN_APPLE) openMyOrdersMenu(player);
+        else handleOrderClick(player, item);
     }
 
     private void handleOrderClick(Player player, ItemStack item) {
         if (!item.hasItemMeta()) return;
-
-        ItemMeta meta = item.getItemMeta();
-        if (meta == null) return;
-
-        // Пробуем получить ID заявки из PersistentDataContainer
-        PersistentDataContainer container = meta.getPersistentDataContainer();
-        String orderIdStr = container.get(orderIdKey, PersistentDataType.STRING);
-
-        if (orderIdStr == null) {
-            // Fallback: ищем по имени предмета
-            String displayName = meta.getDisplayName();
-            if (displayName == null || !displayName.contains("Заявка #")) return;
-
-            // Находим заявку по слоту
-            int slot = -1;
-            for (int i = 0; i < 36; i++) {
-                ItemStack slotItem = player.getOpenInventory().getTopInventory().getItem(i);
-                if (slotItem != null && slotItem.equals(item)) {
-                    slot = i;
-                    break;
-                }
-            }
-
-            if (slot == -1) return;
-
-            List<Map.Entry<UUID, Order>> orders = getSortedOrders();
-            if (slot >= orders.size()) return;
-
-            Map.Entry<UUID, Order> entry = orders.get(slot);
-            processOrderInteraction(player, entry.getKey(), entry.getValue());
-        } else {
-            UUID orderId = UUID.fromString(orderIdStr);
-            Order order = activeOrders.get(orderId);
-            if (order != null) {
-                processOrderInteraction(player, orderId, order);
-            } else {
-                player.sendMessage("§cЗаявка больше не существует!");
-                openMainMenu(player);
-            }
-        }
-    }
-
-    private void processOrderInteraction(Player player, UUID orderId, Order order) {
-        // Проверяем, не своя ли это заявка
-        if (order.owner.equals(player.getUniqueId())) {
-            openMyOrdersMenu(player);
-            return;
-        }
-
-        // Если это заявка на продажу (SELL) - покупаем праймы
-        if (order.type == OrderType.SELL) {
-            openPurchaseAmountMenu(player, orderId, order);
-            player.playSound(player.getLocation(), Sound.UI_BUTTON_CLICK, 1.0f, 1.0f);
-        } else {
-            // Заявка на покупку (BUY) - продаем праймы
-            openSellToOrderMenu(player, orderId, order);
-            player.playSound(player.getLocation(), Sound.UI_BUTTON_CLICK, 1.0f, 1.0f);
-        }
+        String orderIdStr = item.getItemMeta().getPersistentDataContainer().get(orderIdKey, PersistentDataType.STRING);
+        if (orderIdStr == null) return;
+        UUID orderId = UUID.fromString(orderIdStr);
+        Order order = activeOrders.get(orderId);
+        if (order == null) { player.sendMessage("§cЗаявка не существует!"); return; }
+        if (order.owner.equals(player.getUniqueId())) { openMyOrdersMenu(player); return; }
+        if (order.type == OrderType.SELL) openPurchaseAmountMenu(player, orderId, order);
+        else openSellToOrderMenu(player, orderId, order);
     }
 
     private void handleBuyMenuClick(Player player, ItemStack item) {
-        if (item.getType() == Material.ARROW) {
-            openMainMenu(player);
-            player.playSound(player.getLocation(), Sound.UI_BUTTON_CLICK, 1.0f, 1.0f);
-            return;
-        }
-
-        if (item.getType() != Material.PAPER && item.getType() != Material.BARRIER) return;
-        if (!item.hasItemMeta()) return;
-
-        ItemMeta meta = item.getItemMeta();
-        if (meta == null) return;
-
-        // Получаем сумму из PersistentDataContainer
-        PersistentDataContainer container = meta.getPersistentDataContainer();
-        Double amount = container.get(amountKey, PersistentDataType.DOUBLE);
-
-        if (amount == null) {
-            // Fallback: парсим из имени
-            String name = ChatColor.stripColor(meta.getDisplayName());
-            try {
-                amount = parseFormattedNumber(name);
-            } catch (Exception e) {
-                player.sendMessage("§cОшибка обработки количества!");
-                return;
-            }
-        }
-
-        if (amount <= 0) return;
-
-        double rate = calculateRate();
-        createBuyOrder(player, amount.intValue(), rate);
+        if (item.getType() == Material.ARROW) { openMainMenu(player); return; }
+        Double amount = item.getItemMeta().getPersistentDataContainer().get(amountKey, PersistentDataType.DOUBLE);
+        if (amount == null) return;
+        createBuyOrder(player, amount.intValue(), calculateRate());
         openMainMenu(player);
     }
 
     private void handleSellMenuClick(Player player, ItemStack item) {
-        if (item.getType() == Material.ARROW) {
-            openMainMenu(player);
-            player.playSound(player.getLocation(), Sound.UI_BUTTON_CLICK, 1.0f, 1.0f);
-            return;
-        }
-
-        if (item.getType() != Material.WRITABLE_BOOK && item.getType() != Material.BARRIER) return;
-        if (!item.hasItemMeta()) return;
-
-        ItemMeta meta = item.getItemMeta();
-        if (meta == null) return;
-
-        // Получаем сумму из PersistentDataContainer
-        PersistentDataContainer container = meta.getPersistentDataContainer();
-        Double amount = container.get(amountKey, PersistentDataType.DOUBLE);
-
-        if (amount == null) {
-            // Fallback: парсим из имени
-            String name = ChatColor.stripColor(meta.getDisplayName());
-            try {
-                amount = parseFormattedNumber(name);
-            } catch (Exception e) {
-                player.sendMessage("§cОшибка обработки количества!");
-                return;
-            }
-        }
-
-        if (amount <= 0) return;
-
+        if (item.getType() == Material.ARROW) { openMainMenu(player); return; }
+        Double amount = item.getItemMeta().getPersistentDataContainer().get(amountKey, PersistentDataType.DOUBLE);
+        if (amount == null) return;
         createSellOrder(player, amount);
         openMainMenu(player);
     }
 
     private void handleMyOrdersClick(Player player, ItemStack item) {
-        if (item.getType() == Material.ARROW) {
-            openMainMenu(player);
-            player.playSound(player.getLocation(), Sound.UI_BUTTON_CLICK, 1.0f, 1.0f);
-            return;
-        }
-
-        if (item.getType() == Material.EMERALD_BLOCK || item.getType() == Material.DIAMOND_BLOCK) {
-            if (!item.hasItemMeta()) return;
-
-            ItemMeta meta = item.getItemMeta();
-            if (meta == null) return;
-
-            PersistentDataContainer container = meta.getPersistentDataContainer();
-            String orderIdStr = container.get(orderIdKey, PersistentDataType.STRING);
-
-            if (orderIdStr != null) {
-                UUID orderId = UUID.fromString(orderIdStr);
-                cancelSpecificOrder(player, orderId);
-            } else {
-                cancelPlayerOrder(player);
-            }
-            openMyOrdersMenu(player);
-        }
+        if (item.getType() == Material.ARROW) { openMainMenu(player); return; }
+        String idStr = item.getItemMeta().getPersistentDataContainer().get(orderIdKey, PersistentDataType.STRING);
+        if (idStr != null) { cancelSpecificOrder(player, UUID.fromString(idStr)); openMyOrdersMenu(player); }
     }
 
     @EventHandler
@@ -1445,318 +832,96 @@ public final class BirjaHW extends JavaPlugin implements CommandExecutor, Listen
         selectedOrder.remove(e.getPlayer().getUniqueId());
     }
 
-    // ==================== СОЗДАНИЕ ПРЕДМЕТОВ ====================
-
     private ItemStack createBuyAmountItem(double praims, double rate, double balance) {
-        double moneyNeeded = praims * rate;
-        boolean canAfford = balance >= moneyNeeded;
-
-        List<String> lore = new ArrayList<>();
-        lore.add("§7Купить §a" + formatNumber(praims) + " праймов");
-        lore.add("§7Стоимость: §b" + formatNumber(moneyNeeded) + " монеток");
-        lore.add("");
-        lore.add("§7Ваш баланс: " + (canAfford ? "§a" : "§c") + formatNumber(balance) + " монеток");
-        lore.add("");
-
-        if (canAfford) {
-            lore.add("§a§l✓ Нажмите для создания заявки");
-        } else {
-            lore.add("§c§l✗ Недостаточно средств!");
-        }
-
-        ItemStack item = new ItemStack(canAfford ? Material.PAPER : Material.BARRIER);
+        double cost = praims * rate;
+        boolean can = balance >= cost;
+        ItemStack item = new ItemStack(can ? Material.PAPER : Material.BARRIER);
         ItemMeta meta = item.getItemMeta();
-        meta.setDisplayName((canAfford ? "§e" : "§c") + formatNumber(praims));
-        meta.setLore(lore);
-
-        // Сохраняем оригинальное значение
+        meta.setDisplayName((can ? "§e" : "§c") + formatNumber(praims));
+        meta.setLore(Arrays.asList("§7Купить §a" + formatNumber(praims), "§7Стоимость: §b" + formatNumber(cost), "", can ? "§aКлик для создания" : "§cМало монет"));
         meta.getPersistentDataContainer().set(amountKey, PersistentDataType.DOUBLE, praims);
-
         item.setItemMeta(meta);
-
         return item;
     }
 
     private ItemStack createSellAmountItem(double praims, double rate, double balance) {
-        double moneyToReceive = praims * rate;
-        boolean canAfford = balance >= praims;
-
-        List<String> lore = new ArrayList<>();
-        lore.add("§7Продать §a" + formatNumber(praims) + " праймов");
-        lore.add("§7Получите: §b" + formatNumber(moneyToReceive) + " монеток");
-        lore.add("");
-        lore.add("§7Ваш баланс: " + (canAfford ? "§a" : "§c") + formatNumber(balance) + " праймов");
-        lore.add("");
-
-        if (canAfford) {
-            lore.add("§a§l✓ Нажмите для создания заявки");
-        } else {
-            lore.add("§c§l✗ Недостаточно праймов!");
-        }
-
-        ItemStack item = new ItemStack(canAfford ? Material.WRITABLE_BOOK : Material.BARRIER);
+        boolean can = balance >= praims;
+        ItemStack item = new ItemStack(can ? Material.WRITABLE_BOOK : Material.BARRIER);
         ItemMeta meta = item.getItemMeta();
-        meta.setDisplayName((canAfford ? "§e" : "§c") + formatNumber(praims));
-        meta.setLore(lore);
-
-        // Сохраняем оригинальное значение
+        meta.setDisplayName((can ? "§e" : "§c") + formatNumber(praims));
+        meta.setLore(Arrays.asList("§7Продать §a" + formatNumber(praims), "§7Получите: §b" + formatNumber(praims * rate), "", can ? "§aКлик для создания" : "§cМало праймов"));
         meta.getPersistentDataContainer().set(amountKey, PersistentDataType.DOUBLE, praims);
-
         item.setItemMeta(meta);
-
         return item;
     }
 
-    private ItemStack createItem(Material material, String name, String... lore) {
-        ItemStack item = new ItemStack(material);
+    private ItemStack createItem(Material m, String name, String... lore) {
+        ItemStack item = new ItemStack(m);
         ItemMeta meta = item.getItemMeta();
-        if (meta != null) {
-            meta.setDisplayName(name);
-            if (lore.length > 0) {
-                meta.setLore(Arrays.asList(lore));
-            }
-            item.setItemMeta(meta);
-        }
+        if (meta != null) { meta.setDisplayName(name); meta.setLore(Arrays.asList(lore)); item.setItemMeta(meta); }
         return item;
     }
 
-    // ==================== СОЗДАНИЕ/ОТМЕНА ЗАЯВОК ====================
-
-    private final Map<UUID, Long> orderCooldown = new HashMap<>();
-
-    private boolean canCreateOrder(Player player) {
-        long now = System.currentTimeMillis();
-        long cooldown = 3000; // 3 секунды
-
-        if (orderCooldown.containsKey(player.getUniqueId())) {
-            long last = orderCooldown.get(player.getUniqueId());
-            if (now - last < cooldown) {
-                long left = (cooldown - (now - last)) / 1000;
-                player.sendMessage("§cПодожди §e" + left + "§c сек. перед созданием нового заказа");
-                return false;
-            }
-        }
-
-        orderCooldown.put(player.getUniqueId(), now);
-        return true;
-    }
-
-    private void createSellOrder(Player player, double praimsAmount) {
-        if (hasActiveOrder(player)) {
-            player.sendMessage("§c§l✗ У вас уже есть активная заявка! Отмените её сначала.");
-            player.playSound(player.getLocation(), Sound.ENTITY_VILLAGER_NO, 1.0f, 1.0f);
-            return;
-        }
-
-        double balance = getPraims(player);
-        if (balance < praimsAmount) {
-            player.sendMessage("§c§l✗ Недостаточно праймов! Нужно: §e" + formatNumber(praimsAmount) + "§c, есть: §e" + formatNumber(balance));
-            player.playSound(player.getLocation(), Sound.ENTITY_VILLAGER_NO, 1.0f, 1.0f);
-            return;
-        }
-
-        if (!takePraims(player, praimsAmount)) {
-            player.sendMessage("§c§l✗ Ошибка списания средств!");
-            return;
-        }
-
-        double rate = calculateRate();
-        Order order = new Order(player.getUniqueId(), OrderType.SELL, praimsAmount, rate, System.currentTimeMillis());
-        UUID orderId = UUID.randomUUID();
-        activeOrders.put(orderId, order);
+    private void createSellOrder(Player player, double amount) {
+        if (getPraims(player.getUniqueId()) < amount) return;
+        if (!takePraims(player.getUniqueId(), amount)) return;
+        activeOrders.put(UUID.randomUUID(), new Order(player.getUniqueId(), OrderType.SELL, amount, calculateRate(), System.currentTimeMillis()));
         saveOrders();
-
-        double moneyToReceive = praimsAmount * rate;
-        player.sendMessage("");
-        player.sendMessage("§a§l✓ ЗАЯВКА УСПЕШНО СОЗДАНА!");
-        player.sendMessage("§7Продажа: §a" + formatNumber(praimsAmount) + " праймов");
-        player.sendMessage("§7Вы получите: §b" + formatNumber(moneyToReceive) + " монеток");
-        player.sendMessage("§7Курс: §e" + formatNumber(rate) + " монеток §7= §a1 прайм");
-        player.sendMessage("");
-        player.playSound(player.getLocation(), Sound.ENTITY_PLAYER_LEVELUP, 1.0f, 1.5f);
+        player.sendMessage("§a§l✓ Заявка на продажу создана!");
     }
 
-    private void createBuyOrder(Player player, int amount, double pricePerUnit) {
-        if (!canCreateOrder(player)) return;
-
-        double totalPrice = amount * pricePerUnit;
-
-        if (!economy.has(player, totalPrice)) {
-            player.sendMessage("§c§l✗ Недостаточно монеток! Нужно: §b" + formatNumber(totalPrice));
-            player.playSound(player.getLocation(), Sound.ENTITY_VILLAGER_NO, 1.0f, 1.0f);
-            return;
-        }
-
-        economy.withdrawPlayer(player, totalPrice);
-
-        Order order = new Order(player.getUniqueId(), OrderType.BUY, amount, pricePerUnit, System.currentTimeMillis());
-        UUID orderId = UUID.randomUUID();
-        activeOrders.put(orderId, order);
+    private void createBuyOrder(Player player, int amount, double price) {
+        double total = amount * price;
+        if (!economy.has(player, total)) return;
+        economy.withdrawPlayer(player, total);
+        activeOrders.put(UUID.randomUUID(), new Order(player.getUniqueId(), OrderType.BUY, amount, price, System.currentTimeMillis()));
         saveOrders();
-
-        player.sendMessage("");
-        player.sendMessage("§a§l✓ ЗАЯВКА НА ПОКУПКУ СОЗДАНА!");
-        player.sendMessage("§7Покупка: §a" + formatNumber(amount) + " праймов");
-        player.sendMessage("§7Потрачено: §b" + formatNumber(totalPrice) + " монеток");
-        player.sendMessage("§7Курс: §e" + formatNumber(pricePerUnit) + " монеток §7= §a1 прайм");
-        player.sendMessage("");
-        player.playSound(player.getLocation(), Sound.ENTITY_PLAYER_LEVELUP, 1.0f, 1.5f);
+        player.sendMessage("§a§l✓ Заявка на покупку создана!");
     }
 
-    private void cancelPlayerOrder(Player player) {
-        UUID orderToCancel = null;
-        Order order = null;
-
-        for (Map.Entry<UUID, Order> entry : activeOrders.entrySet()) {
-            if (entry.getValue().owner.equals(player.getUniqueId())) {
-                orderToCancel = entry.getKey();
-                order = entry.getValue();
-                break;
-            }
-        }
-
-        if (orderToCancel == null) {
-            player.sendMessage("§c§l✗ У вас нет активных заявок!");
-            player.playSound(player.getLocation(), Sound.ENTITY_VILLAGER_NO, 1.0f, 1.0f);
-            return;
-        }
-
-        activeOrders.remove(orderToCancel);
-
-        if (order.type == OrderType.SELL) {
-            givePraims(player, (int)order.amount);
-            player.sendMessage("§a§l✓ Заявка отменена! Возвращено: §e" + formatNumber(order.amount) + " праймов");
-        } else {
-            double moneyToReturn = order.amount * order.rate;
-            economy.depositPlayer(player, moneyToReturn);
-            player.sendMessage("§a§l✓ Заявка отменена! Возвращено: §b" + formatNumber(moneyToReturn) + " монеток");
-        }
-
+    private void cancelSpecificOrder(Player player, UUID id) {
+        Order o = activeOrders.remove(id);
+        if (o == null) return;
+        if (o.type == OrderType.SELL) givePraims(player.getUniqueId(), o.amount);
+        else economy.depositPlayer(player, o.amount * o.rate);
         saveOrders();
-        player.playSound(player.getLocation(), Sound.BLOCK_NOTE_BLOCK_PLING, 1.0f, 1.0f);
+        player.sendMessage("§a§l✓ Отменено!");
     }
 
-    private void cancelSpecificOrder(Player player, UUID orderId) {
-        Order order = activeOrders.get(orderId);
-        if (order == null || !order.owner.equals(player.getUniqueId())) {
-            player.sendMessage("§c§l✗ Заявка не найдена!");
-            return;
-        }
-
-        activeOrders.remove(orderId);
-
-        if (order.type == OrderType.SELL) {
-            givePraims(player, (int)order.amount);
-            player.sendMessage("§a§l✓ Заявка отменена! Возвращено: §e" + formatNumber(order.amount) + " праймов");
-        } else {
-            double moneyToReturn = order.amount * order.rate;
-            economy.depositPlayer(player, moneyToReturn);
-            player.sendMessage("§a§l✓ Заявка отменена! Возвращено: §b" + formatNumber(moneyToReturn) + " монеток");
-        }
-
-        saveOrders();
-        player.playSound(player.getLocation(), Sound.BLOCK_NOTE_BLOCK_PLING, 1.0f, 1.0f);
-    }
-
-    // ==================== ВСПОМОГАТЕЛЬНЫЕ МЕТОДЫ ====================
-
-    private boolean hasActiveOrder(Player player) {
-        return activeOrders.values().stream()
-                .anyMatch(order -> order.owner.equals(player.getUniqueId()));
-    }
-
-    private int getPlayerOrdersCount(Player player) {
-        return (int) activeOrders.values().stream()
-                .filter(order -> order.owner.equals(player.getUniqueId()))
-                .count();
-    }
-
-    private int getOrdersByType(OrderType type) {
-        return (int) activeOrders.values().stream()
-                .filter(order -> order.type == type)
-                .count();
-    }
+    private int getPlayerOrdersCount(Player p) { return (int)activeOrders.values().stream().filter(o -> o.owner.equals(p.getUniqueId())).count(); }
+    private int getOrdersByType(OrderType t) { return (int)activeOrders.values().stream().filter(o -> o.type == t).count(); }
 
     private double calculateRate() {
-        int sellOrders = getOrdersByType(OrderType.SELL);
-        int buyOrders = getOrdersByType(OrderType.BUY);
-
-        double baseRate = getConfig().getDouble("base-rate", 400000.0);
-        double volatility = getConfig().getDouble("volatility", 0.05);
-        double minRate = getConfig().getDouble("min-rate", 100000.0);
-
-        int difference = buyOrders - sellOrders;
-        double adjustment = difference * volatility * baseRate;
-
-        return Math.max(baseRate + adjustment, minRate);
+        double base = getConfig().getDouble("base-rate", 400000.0);
+        double vol = getConfig().getDouble("volatility", 0.05);
+        int diff = getOrdersByType(OrderType.BUY) - getOrdersByType(OrderType.SELL);
+        return Math.max(getConfig().getDouble("min-rate", 100000.0), base + diff * vol * base);
     }
 
-    public double getPraims(Player player) {
-        return getConfig().getDouble("praims." + player.getUniqueId(), 0.0);
+    public double getPraims(UUID id) { return getConfig().getDouble("praims." + id, 0.0); }
+    public double getPraims(Player p) { return getPraims(p.getUniqueId()); }
+    
+    public boolean takePraims(UUID id, double amt) {
+        double cur = getPraims(id); if (cur < amt) return false;
+        getConfig().set("praims." + id, cur - amt); saveConfig(); return true;
+    }
+    public boolean takePraims(Player p, double amt) { return takePraims(p.getUniqueId(), amt); }
+
+    public boolean givePraims(UUID id, double amt) {
+        getConfig().set("praims." + id, getPraims(id) + amt); saveConfig(); return true;
+    }
+    public boolean givePraims(Player p, double amt) { return givePraims(p.getUniqueId(), amt); }
+
+    private String formatNumber(double n) {
+        if (n >= 1e9) return String.format("%.1fB", n/1e9);
+        if (n >= 1e6) return String.format("%.1fM", n/1e6);
+        if (n >= 1e3) return String.format("%.1fK", n/1e3);
+        return String.format("%.0f", n);
     }
 
-    public boolean takePraims(Player player, double amount) {
-        double current = getPraims(player);
-        if (current < amount) return false;
-        getConfig().set("praims." + player.getUniqueId(), current - amount);
-        saveConfig();
-        return true;
-    }
-
-    public boolean givePraims(Player player, double amount) {
-        double current = getPraims(player);
-        getConfig().set("praims." + player.getUniqueId(), current + amount);
-        saveConfig();
-        return true;
-    }
-
-    private String formatNumber(double number) {
-        if (number >= 1000000000) {
-            return String.format("%.1fB", number / 1000000000);
-        } else if (number >= 1000000) {
-            return String.format("%.1fM", number / 1000000);
-        } else if (number >= 1000) {
-            return String.format("%.1fK", number / 1000);
-        } else {
-            return String.format("%.0f", number);
-        }
-    }
-
-    private double parseFormattedNumber(String str) {
-        str = str.toUpperCase().trim();
-        double multiplier = 1;
-
-        if (str.endsWith("B")) {
-            multiplier = 1000000000;
-            str = str.substring(0, str.length() - 1);
-        } else if (str.endsWith("M")) {
-            multiplier = 1000000;
-            str = str.substring(0, str.length() - 1);
-        } else if (str.endsWith("K")) {
-            multiplier = 1000;
-            str = str.substring(0, str.length() - 1);
-        }
-
-        return Double.parseDouble(str) * multiplier;
-    }
-
-    private enum OrderType {
-        SELL, BUY
-    }
-
+    private enum OrderType { SELL, BUY }
     private static class Order {
-        UUID owner;
-        OrderType type;
-        double amount;
-        double rate;
-        long timestamp;
-
-        Order(UUID owner, OrderType type, double amount, double rate, long timestamp) {
-            this.owner = owner;
-            this.type = type;
-            this.amount = amount;
-            this.rate = rate;
-            this.timestamp = timestamp;
-        }
+        UUID owner; OrderType type; double amount; double rate; long timestamp;
+        Order(UUID o, OrderType t, double a, double r, long ts) { owner=o; type=t; amount=a; rate=r; timestamp=ts; }
     }
 }
