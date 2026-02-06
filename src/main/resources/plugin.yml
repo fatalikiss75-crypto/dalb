@@ -15,6 +15,10 @@ commands:
     description: Управление праймами игроков
     usage: /<command> [give|set|take] <игрок> <количество>
     aliases: [прайм, прайм, праймы]
+  exchange:
+    description: Управление биржей
+    usage: /<command> [sethead|resethead]
+    aliases: [exch]
 
 permissions:
   birja.use:
