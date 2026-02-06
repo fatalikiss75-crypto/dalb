@@ -4,6 +4,7 @@ import net.milkbowl.vault.economy.Economy;
 import org.bukkit.Bukkit;
 import org.bukkit.Material;
 import org.bukkit.Sound;
+import org.bukkit.NamespacedKey;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandExecutor;
 import org.bukkit.command.CommandSender;
@@ -15,7 +16,8 @@ import org.bukkit.event.inventory.InventoryCloseEvent;
 import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.ItemMeta;
-import org.bukkit.inventory.meta.SkullMeta;
+import org.bukkit.persistence.PersistentDataContainer;
+import org.bukkit.persistence.PersistentDataType;
 import org.bukkit.plugin.RegisteredServiceProvider;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.configuration.file.FileConfiguration;
@@ -38,13 +40,16 @@ public final class BirjaHW extends JavaPlugin implements CommandExecutor, Listen
     private FileConfiguration ordersConfig;
     private Map<UUID, Order> activeOrders = new HashMap<>();
     private Map<UUID, String> menuType = new HashMap<>();
-    
-    // Для меню покупки - выбранное количество праймов
-    private Map<UUID, Integer> selectedBuyAmount = new HashMap<>();
-    // Для хранения выбранной заявки при покупке
+
+    // Для меню покупки/продажи - выбранное количество
+    private Map<UUID, Integer> selectedAmount = new HashMap<>();
+    // Для хранения выбранной заявки
     private Map<UUID, UUID> selectedOrder = new HashMap<>();
     // Кастомная головка для отображения заявок
     private ItemStack customOrderHead = null;
+    // Ключ для PersistentDataContainer
+    private NamespacedKey amountKey;
+    private NamespacedKey orderIdKey;
 
     @Override
     public void onEnable() {
@@ -58,6 +63,9 @@ public final class BirjaHW extends JavaPlugin implements CommandExecutor, Listen
         setupOrdersFile();
         loadOrders();
         loadCustomHead();
+
+        amountKey = new NamespacedKey(this, "praims_amount");
+        orderIdKey = new NamespacedKey(this, "order_id");
 
         getCommand("birja").setExecutor(this);
         getCommand("praims").setExecutor(new AdminCommands(this));
@@ -190,7 +198,7 @@ public final class BirjaHW extends JavaPlugin implements CommandExecutor, Listen
         if (command.getName().equalsIgnoreCase("exchange")) {
             return handleExchangeCommand(sender, args);
         }
-        
+
         if (!(sender instanceof Player)) {
             sender.sendMessage("§cЭта команда только для игроков!");
             return true;
@@ -217,14 +225,13 @@ public final class BirjaHW extends JavaPlugin implements CommandExecutor, Listen
         Player player = (Player) sender;
 
         if (!player.hasPermission("birja.admin")) {
-            player.sendMessage("§cУ вас нет прав!");
+            // Открываем биржу если нет прав админа
+            openMainMenu(player);
             return true;
         }
 
         if (args.length == 0) {
-            player.sendMessage("§6§lБиржа Праймов §7- Команды:");
-            player.sendMessage("§e/exchange sethead §7- Установить головку из руки для заявок");
-            player.sendMessage("§e/exchange resethead §7- Сбросить головку на стандартную");
+            openMainMenu(player);
             return true;
         }
 
@@ -253,7 +260,7 @@ public final class BirjaHW extends JavaPlugin implements CommandExecutor, Listen
                 break;
 
             default:
-                player.sendMessage("§cНеизвестная команда. Используйте: /exchange [sethead|resethead]");
+                openMainMenu(player);
                 break;
         }
 
@@ -270,12 +277,16 @@ public final class BirjaHW extends JavaPlugin implements CommandExecutor, Listen
     private void refreshMainMenu(Player player) {
         if (player.getOpenInventory() != null && player.getOpenInventory().getTopInventory().getSize() == 54) {
             Inventory inv = player.getOpenInventory().getTopInventory();
-            fillMainMenu(inv, player);
+            // Проверяем, что это наше меню
+            String title = ChatColor.stripColor(player.getOpenInventory().getTitle());
+            if (title.equalsIgnoreCase("БИРЖА ПРАЙМОВ")) {
+                fillMainMenu(inv, player);
+            }
         }
     }
 
     private void fillMainMenu(Inventory inv, Player player) {
-        // Заполняем фон красивыми стеклянными панелями
+        // Заполняем фон
         for (int i = 0; i < 54; i++) {
             inv.setItem(i, createItem(Material.BLACK_STAINED_GLASS_PANE, " "));
         }
@@ -301,7 +312,7 @@ public final class BirjaHW extends JavaPlugin implements CommandExecutor, Listen
         inv.setItem(46, createItem(Material.BLUE_STAINED_GLASS_PANE, " "));
         inv.setItem(47, createItem(Material.BLUE_STAINED_GLASS_PANE, " "));
 
-        // Продать праймы
+        // Продать праймы (создать заявку на продажу)
         inv.setItem(48, createItem(Material.EMERALD_BLOCK, "§a§lПродать праймы",
                 "§7Создать заявку на продажу",
                 "§7Обменять праймы на монетки",
@@ -318,7 +329,7 @@ public final class BirjaHW extends JavaPlugin implements CommandExecutor, Listen
                 "§7Заявок на продажу: §a" + getOrdersByType(OrderType.SELL),
                 "§7Заявок на покупку: §b" + getOrdersByType(OrderType.BUY)));
 
-        // Купить праймы
+        // Купить праймы (создать заявку на покупку)
         inv.setItem(50, createItem(Material.DIAMOND_BLOCK, "§b§lКупить праймы",
                 "§7Создать заявку на покупку",
                 "§7Обменять монетки на праймы",
@@ -346,15 +357,43 @@ public final class BirjaHW extends JavaPlugin implements CommandExecutor, Listen
         return new ItemStack(type == OrderType.SELL ? Material.WRITABLE_BOOK : Material.ENCHANTED_BOOK);
     }
 
+    /**
+     * Сортирует заявки по выгодности:
+     * - SELL заявки: сначала с наименьшим курсом (выгоднее купить)
+     * - BUY заявки: сначала с наибольшим курсом (выгоднее продать)
+     */
+    private List<Map.Entry<UUID, Order>> getSortedOrders() {
+        return activeOrders.entrySet().stream()
+                .sorted((a, b) -> {
+                    Order orderA = a.getValue();
+                    Order orderB = b.getValue();
+
+                    // Сначала SELL заявки (которые выгоднее для покупателя)
+                    // Внутри SELL - по возрастанию курса (дешевле = лучше)
+                    if (orderA.type == OrderType.SELL && orderB.type == OrderType.SELL) {
+                        return Double.compare(orderA.rate, orderB.rate);
+                    }
+
+                    // Затем BUY заявки (которые выгоднее для продавца)
+                    // Внутри BUY - по убыванию курса (дороже = лучше)
+                    if (orderA.type == OrderType.BUY && orderB.type == OrderType.BUY) {
+                        return Double.compare(orderB.rate, orderA.rate);
+                    }
+
+                    // SELL идут перед BUY
+                    if (orderA.type == OrderType.SELL) return -1;
+                    return 1;
+                })
+                .limit(36)
+                .collect(Collectors.toList());
+    }
+
     private void fillOrdersDisplay(Inventory inv, Player player) {
         for (int i = 0; i < 36; i++) {
             inv.setItem(i, null);
         }
 
-        List<Map.Entry<UUID, Order>> orders = activeOrders.entrySet().stream()
-                .sorted((a, b) -> Long.compare(b.getValue().timestamp, a.getValue().timestamp))
-                .limit(36)
-                .collect(Collectors.toList());
+        List<Map.Entry<UUID, Order>> orders = getSortedOrders();
 
         int slot = 0;
         for (Map.Entry<UUID, Order> entry : orders) {
@@ -394,13 +433,19 @@ public final class BirjaHW extends JavaPlugin implements CommandExecutor, Listen
                     lore.add("§b§l✦ Нажмите чтобы купить");
                     lore.add("§7(можно купить частично)");
                 } else {
-                    lore.add("§7§oЗаявка на покупку");
+                    lore.add("§b§l✦ Нажмите чтобы продать");
+                    lore.add("§7(можно продать частично)");
                 }
             }
 
             ItemMeta meta = displayItem.getItemMeta();
             meta.setDisplayName((order.type == OrderType.SELL ? "§a§l" : "§b§l") + "Заявка #" + (slot + 1));
             meta.setLore(lore);
+
+            // Сохраняем ID заявки в предмете
+            PersistentDataContainer container = meta.getPersistentDataContainer();
+            container.set(orderIdKey, PersistentDataType.STRING, entry.getKey().toString());
+
             displayItem.setItemMeta(meta);
 
             int amount = 1;
@@ -424,14 +469,14 @@ public final class BirjaHW extends JavaPlugin implements CommandExecutor, Listen
     }
 
     // ==================== МЕНЮ ВЫБОРА КОЛИЧЕСТВА ДЛЯ ПОКУПКИ ====================
-    
+
     private void openPurchaseAmountMenu(Player player, UUID orderId, Order order) {
-        selectedBuyAmount.put(player.getUniqueId(), 1);
+        selectedAmount.put(player.getUniqueId(), 1);
         selectedOrder.put(player.getUniqueId(), orderId);
-        
+
         Inventory inv = Bukkit.createInventory(null, 54, "§b§lВыбор количества для покупки");
         fillPurchaseAmountMenu(inv, player, order);
-        
+
         menuType.put(player.getUniqueId(), "BUY_AMOUNT");
         player.openInventory(inv);
     }
@@ -442,9 +487,9 @@ public final class BirjaHW extends JavaPlugin implements CommandExecutor, Listen
             inv.setItem(i, createItem(Material.BLACK_STAINED_GLASS_PANE, " "));
         }
 
-        int selectedAmount = selectedBuyAmount.getOrDefault(player.getUniqueId(), 1);
+        int selectedAmt = selectedAmount.getOrDefault(player.getUniqueId(), 1);
         double rate = order.rate;
-        double totalCost = selectedAmount * rate;
+        double totalCost = selectedAmt * rate;
         double playerMoney = economy.getBalance(player);
         boolean canAfford = playerMoney >= totalCost;
         double maxCanBuy = Math.min(order.amount, Math.floor(playerMoney / rate));
@@ -462,7 +507,7 @@ public final class BirjaHW extends JavaPlugin implements CommandExecutor, Listen
 
         // Кнопки + (зеленые)
         int[] plusSlots = {20, 21, 22, 23, 24};
-        int[] plusValues = {1, 5, 10, 15, 100};
+        int[] plusValues = {1, 5, 10, 50, 100};
         Material[] plusMaterials = {
             Material.LIME_STAINED_GLASS_PANE,
             Material.LIME_STAINED_GLASS,
@@ -470,7 +515,7 @@ public final class BirjaHW extends JavaPlugin implements CommandExecutor, Listen
             Material.LIME_CONCRETE,
             Material.LIME_WOOL
         };
-        
+
         for (int i = 0; i < plusValues.length; i++) {
             inv.setItem(plusSlots[i], createItem(plusMaterials[i], "§a§l+" + plusValues[i],
                     "§7Добавить §a" + plusValues[i] + " §7праймов",
@@ -479,7 +524,7 @@ public final class BirjaHW extends JavaPlugin implements CommandExecutor, Listen
         }
 
         // Текущее выбранное количество (центр)
-        inv.setItem(31, createItem(Material.ENCHANTED_BOOK, "§6§lВыбрано: §e" + selectedAmount + " праймов",
+        inv.setItem(31, createItem(Material.ENCHANTED_BOOK, "§6§lВыбрано: §e" + selectedAmt + " праймов",
                 "§7Стоимость: §b" + formatNumber(totalCost) + " монеток",
                 "§7Ваш баланс: " + (canAfford ? "§a" : "§c") + formatNumber(playerMoney) + " монеток",
                 "",
@@ -495,7 +540,7 @@ public final class BirjaHW extends JavaPlugin implements CommandExecutor, Listen
             Material.RED_CONCRETE,
             Material.RED_WOOL
         };
-        
+
         for (int i = 0; i < minusValues.length; i++) {
             inv.setItem(minusSlots[i], createItem(minusMaterials[i], "§c§l-" + minusValues[i],
                     "§7Убрать §c" + minusValues[i] + " §7праймов",
@@ -504,9 +549,9 @@ public final class BirjaHW extends JavaPlugin implements CommandExecutor, Listen
         }
 
         // Кнопка купить
-        inv.setItem(48, createItem(canAfford ? Material.EMERALD_BLOCK : Material.BARRIER, 
+        inv.setItem(48, createItem(canAfford ? Material.EMERALD_BLOCK : Material.BARRIER,
                 canAfford ? "§a§l✓ Купить праймы" : "§c§l✗ Недостаточно средств",
-                "§7Количество: §e" + selectedAmount + " праймов",
+                "§7Количество: §e" + selectedAmt + " праймов",
                 "§7Стоимость: §b" + formatNumber(totalCost) + " монеток",
                 "",
                 canAfford ? "§a§lКлик чтобы купить!" : "§cНужно больше монеток!"));
@@ -524,37 +569,17 @@ public final class BirjaHW extends JavaPlugin implements CommandExecutor, Listen
         inv.setItem(50, createItem(Material.ARROW, "§e§lНазад", "§7Вернуться к бирже"));
     }
 
-    private void updatePurchaseAmountMenu(Player player) {
-        if (player.getOpenInventory() == null) return;
-        Inventory inv = player.getOpenInventory().getTopInventory();
-        String title = ChatColor.stripColor(player.getOpenInventory().getTitle());
-        
-        if (!title.equalsIgnoreCase("ВЫБОР КОЛИЧЕСТВА ДЛЯ ПОКУПКИ")) return;
-        
-        UUID orderId = selectedOrder.get(player.getUniqueId());
-        if (orderId == null) return;
-        
-        Order order = activeOrders.get(orderId);
-        if (order == null) {
-            player.closeInventory();
-            player.sendMessage("§cЗаявка больше не существует!");
-            return;
-        }
-        
-        fillPurchaseAmountMenu(inv, player, order);
-    }
-
     private void handlePurchaseAmountMenuClick(Player player, ItemStack item) {
         if (item == null || !item.hasItemMeta()) return;
-        
+
         String name = ChatColor.stripColor(item.getItemMeta().getDisplayName());
         UUID orderId = selectedOrder.get(player.getUniqueId());
-        
+
         if (orderId == null) {
             player.closeInventory();
             return;
         }
-        
+
         Order order = activeOrders.get(orderId);
         if (order == null) {
             player.sendMessage("§cЗаявка больше не существует!");
@@ -564,7 +589,7 @@ public final class BirjaHW extends JavaPlugin implements CommandExecutor, Listen
 
         // Кнопка назад
         if (name.contains("Назад")) {
-            selectedBuyAmount.remove(player.getUniqueId());
+            selectedAmount.remove(player.getUniqueId());
             selectedOrder.remove(player.getUniqueId());
             openMainMenu(player);
             player.playSound(player.getLocation(), Sound.UI_BUTTON_CLICK, 1.0f, 1.0f);
@@ -573,23 +598,33 @@ public final class BirjaHW extends JavaPlugin implements CommandExecutor, Listen
 
         // Кнопки +
         if (name.startsWith("+")) {
-            int value = Integer.parseInt(name.substring(1));
-            int current = selectedBuyAmount.getOrDefault(player.getUniqueId(), 0);
-            int newAmount = Math.min(current + value, (int)order.amount);
-            selectedBuyAmount.put(player.getUniqueId(), newAmount);
-            updatePurchaseAmountMenu(player);
-            player.playSound(player.getLocation(), Sound.UI_BUTTON_CLICK, 1.0f, 1.2f);
+            try {
+                int value = Integer.parseInt(name.substring(1));
+                int current = selectedAmount.getOrDefault(player.getUniqueId(), 0);
+                int newAmount = Math.min(current + value, (int)order.amount);
+                selectedAmount.put(player.getUniqueId(), newAmount);
+                // Переоткрываем меню для обновления
+                openPurchaseAmountMenuRefresh(player, orderId, order);
+                player.playSound(player.getLocation(), Sound.UI_BUTTON_CLICK, 1.0f, 1.2f);
+            } catch (NumberFormatException e) {
+                getLogger().warning("Ошибка парсинга числа: " + name);
+            }
             return;
         }
 
         // Кнопки -
         if (name.startsWith("-")) {
-            int value = Integer.parseInt(name.substring(1));
-            int current = selectedBuyAmount.getOrDefault(player.getUniqueId(), 0);
-            int newAmount = Math.max(1, current - value);
-            selectedBuyAmount.put(player.getUniqueId(), newAmount);
-            updatePurchaseAmountMenu(player);
-            player.playSound(player.getLocation(), Sound.UI_BUTTON_CLICK, 1.0f, 0.8f);
+            try {
+                int value = Integer.parseInt(name.substring(1));
+                int current = selectedAmount.getOrDefault(player.getUniqueId(), 0);
+                int newAmount = Math.max(1, current - value);
+                selectedAmount.put(player.getUniqueId(), newAmount);
+                // Переоткрываем меню для обновления
+                openPurchaseAmountMenuRefresh(player, orderId, order);
+                player.playSound(player.getLocation(), Sound.UI_BUTTON_CLICK, 1.0f, 0.8f);
+            } catch (NumberFormatException e) {
+                getLogger().warning("Ошибка парсинга числа: " + name);
+            }
             return;
         }
 
@@ -599,7 +634,7 @@ public final class BirjaHW extends JavaPlugin implements CommandExecutor, Listen
             double playerMoney = economy.getBalance(player);
             int maxCanBuy = (int)Math.min(order.amount, Math.floor(playerMoney / rate));
             if (maxCanBuy > 0) {
-                selectedBuyAmount.put(player.getUniqueId(), maxCanBuy);
+                selectedAmount.put(player.getUniqueId(), maxCanBuy);
                 executePurchase(player, orderId, order, maxCanBuy);
             }
             return;
@@ -607,9 +642,15 @@ public final class BirjaHW extends JavaPlugin implements CommandExecutor, Listen
 
         // Купить
         if (name.contains("Купить праймы")) {
-            int amount = selectedBuyAmount.getOrDefault(player.getUniqueId(), 1);
+            int amount = selectedAmount.getOrDefault(player.getUniqueId(), 1);
             executePurchase(player, orderId, order, amount);
         }
+    }
+
+    private void openPurchaseAmountMenuRefresh(Player player, UUID orderId, Order order) {
+        // Обновляем текущий инвентарь без закрытия
+        Inventory inv = player.getOpenInventory().getTopInventory();
+        fillPurchaseAmountMenu(inv, player, order);
     }
 
     private void executePurchase(Player player, UUID orderId, Order order, int amount) {
@@ -619,7 +660,7 @@ public final class BirjaHW extends JavaPlugin implements CommandExecutor, Listen
         }
 
         double totalCost = amount * order.rate;
-        
+
         if (!economy.has(player, totalCost)) {
             player.sendMessage("§c§l✗ Недостаточно монеток!");
             player.playSound(player.getLocation(), Sound.ENTITY_VILLAGER_NO, 1.0f, 1.0f);
@@ -628,15 +669,16 @@ public final class BirjaHW extends JavaPlugin implements CommandExecutor, Listen
 
         // Списываем деньги
         economy.withdrawPlayer(player, totalCost);
-        
+
         // Даем праймы покупателю
         givePraims(player, amount);
-        
+
         // Обновляем заявку
         if (amount >= order.amount) {
             // Заявка полностью выполнена
             Player seller = Bukkit.getPlayer(order.owner);
             if (seller != null && seller.isOnline()) {
+                economy.depositPlayer(seller, totalCost);
                 seller.sendMessage("§a§l✓ Ваша заявка на продажу выполнена!");
                 seller.sendMessage("§7Продано: §e" + formatNumber(order.amount) + " праймов");
                 seller.sendMessage("§7Получено: §b" + formatNumber(totalCost) + " монеток");
@@ -648,6 +690,7 @@ public final class BirjaHW extends JavaPlugin implements CommandExecutor, Listen
             order.amount -= amount;
             Player seller = Bukkit.getPlayer(order.owner);
             if (seller != null && seller.isOnline()) {
+                economy.depositPlayer(seller, totalCost);
                 seller.sendMessage("§e§l⚡ Частичная продажа!");
                 seller.sendMessage("§7Продано: §e" + formatNumber(amount) + " праймов");
                 seller.sendMessage("§7Получено: §b" + formatNumber(totalCost) + " монеток");
@@ -655,7 +698,7 @@ public final class BirjaHW extends JavaPlugin implements CommandExecutor, Listen
                 seller.playSound(seller.getLocation(), Sound.BLOCK_NOTE_BLOCK_PLING, 1.0f, 1.5f);
             }
         }
-        
+
         saveOrders();
 
         // Сообщение покупателю
@@ -667,12 +710,255 @@ public final class BirjaHW extends JavaPlugin implements CommandExecutor, Listen
         player.playSound(player.getLocation(), Sound.ENTITY_PLAYER_LEVELUP, 1.0f, 2.0f);
 
         // Очищаем данные и возвращаем в меню
-        selectedBuyAmount.remove(player.getUniqueId());
+        selectedAmount.remove(player.getUniqueId());
         selectedOrder.remove(player.getUniqueId());
         openMainMenu(player);
     }
 
-    // ==================== ОСТАЛЬНЫЕ МЕНЮ ====================
+    // ==================== МЕНЮ ВЫБОРА КОЛИЧЕСТВА ДЛЯ ПРОДАЖИ (BUY ORDER) ====================
+
+    private void openSellToOrderMenu(Player player, UUID orderId, Order order) {
+        selectedAmount.put(player.getUniqueId(), 1);
+        selectedOrder.put(player.getUniqueId(), orderId);
+
+        Inventory inv = Bukkit.createInventory(null, 54, "§a§lВыбор количества для продажи");
+        fillSellToOrderMenu(inv, player, order);
+
+        menuType.put(player.getUniqueId(), "SELL_TO_ORDER");
+        player.openInventory(inv);
+    }
+
+    private void fillSellToOrderMenu(Inventory inv, Player player, Order order) {
+        // Фон
+        for (int i = 0; i < 54; i++) {
+            inv.setItem(i, createItem(Material.BLACK_STAINED_GLASS_PANE, " "));
+        }
+
+        int selectedAmt = selectedAmount.getOrDefault(player.getUniqueId(), 1);
+        double rate = order.rate;
+        double totalReward = selectedAmt * rate;
+        double playerPraims = getPraims(player);
+        boolean canSell = playerPraims >= selectedAmt;
+        double maxCanSell = Math.min(order.amount, playerPraims);
+
+        Player buyer = Bukkit.getPlayer(order.owner);
+        String buyerName = buyer != null ? buyer.getName() : "§7Неизвестно";
+
+        // Информация о покупателе
+        inv.setItem(4, createItem(Material.PLAYER_HEAD, "§e§lИнформация о заявке",
+                "§7Покупатель: §f" + buyerName,
+                "§7Нужно: §a" + formatNumber(order.amount) + " праймов",
+                "§7Курс: §e" + formatNumber(rate) + " монеток/прайм",
+                "",
+                "§7Вы можете продать макс: §b" + formatNumber(maxCanSell) + " праймов"));
+
+        // Кнопки + (зеленые)
+        int[] plusSlots = {20, 21, 22, 23, 24};
+        int[] plusValues = {1, 5, 10, 50, 100};
+        Material[] plusMaterials = {
+            Material.LIME_STAINED_GLASS_PANE,
+            Material.LIME_STAINED_GLASS,
+            Material.LIME_TERRACOTTA,
+            Material.LIME_CONCRETE,
+            Material.LIME_WOOL
+        };
+
+        for (int i = 0; i < plusValues.length; i++) {
+            inv.setItem(plusSlots[i], createItem(plusMaterials[i], "§a§l+" + plusValues[i],
+                    "§7Добавить §a" + plusValues[i] + " §7праймов",
+                    "",
+                    "§eКлик чтобы добавить"));
+        }
+
+        // Текущее выбранное количество (центр)
+        inv.setItem(31, createItem(Material.WRITABLE_BOOK, "§6§lВыбрано: §e" + selectedAmt + " праймов",
+                "§7Вы получите: §b" + formatNumber(totalReward) + " монеток",
+                "§7Ваш баланс: " + (canSell ? "§a" : "§c") + formatNumber(playerPraims) + " праймов",
+                "",
+                canSell ? "§a§l✓ Достаточно праймов" : "§c§l✗ Недостаточно праймов!"));
+
+        // Кнопки - (красные)
+        int[] minusSlots = {38, 39, 40, 41, 42};
+        int[] minusValues = {1, 5, 10, 50, 100};
+        Material[] minusMaterials = {
+            Material.RED_STAINED_GLASS_PANE,
+            Material.RED_STAINED_GLASS,
+            Material.RED_TERRACOTTA,
+            Material.RED_CONCRETE,
+            Material.RED_WOOL
+        };
+
+        for (int i = 0; i < minusValues.length; i++) {
+            inv.setItem(minusSlots[i], createItem(minusMaterials[i], "§c§l-" + minusValues[i],
+                    "§7Убрать §c" + minusValues[i] + " §7праймов",
+                    "",
+                    "§eКлик чтобы убрать"));
+        }
+
+        // Кнопка продать
+        inv.setItem(48, createItem(canSell ? Material.DIAMOND_BLOCK : Material.BARRIER,
+                canSell ? "§a§l✓ Продать праймы" : "§c§l✗ Недостаточно праймов",
+                "§7Количество: §e" + selectedAmt + " праймов",
+                "§7Вы получите: §b" + formatNumber(totalReward) + " монеток",
+                "",
+                canSell ? "§a§lКлик чтобы продать!" : "§cНужно больше праймов!"));
+
+        // Продать максимум
+        if (maxCanSell > 0) {
+            inv.setItem(49, createItem(Material.GOLD_BLOCK, "§6§l⚡ Продать максимум",
+                    "§7Продать: §e" + formatNumber(maxCanSell) + " праймов",
+                    "§7Вы получите: §b" + formatNumber(maxCanSell * rate) + " монеток",
+                    "",
+                    "§eКлик для максимальной продажи"));
+        }
+
+        // Назад
+        inv.setItem(50, createItem(Material.ARROW, "§e§lНазад", "§7Вернуться к бирже"));
+    }
+
+    private void handleSellToOrderMenuClick(Player player, ItemStack item) {
+        if (item == null || !item.hasItemMeta()) return;
+
+        String name = ChatColor.stripColor(item.getItemMeta().getDisplayName());
+        UUID orderId = selectedOrder.get(player.getUniqueId());
+
+        if (orderId == null) {
+            player.closeInventory();
+            return;
+        }
+
+        Order order = activeOrders.get(orderId);
+        if (order == null) {
+            player.sendMessage("§cЗаявка больше не существует!");
+            openMainMenu(player);
+            return;
+        }
+
+        // Кнопка назад
+        if (name.contains("Назад")) {
+            selectedAmount.remove(player.getUniqueId());
+            selectedOrder.remove(player.getUniqueId());
+            openMainMenu(player);
+            player.playSound(player.getLocation(), Sound.UI_BUTTON_CLICK, 1.0f, 1.0f);
+            return;
+        }
+
+        // Кнопки +
+        if (name.startsWith("+")) {
+            try {
+                int value = Integer.parseInt(name.substring(1));
+                int current = selectedAmount.getOrDefault(player.getUniqueId(), 0);
+                int newAmount = Math.min(current + value, (int)order.amount);
+                selectedAmount.put(player.getUniqueId(), newAmount);
+                openSellToOrderMenuRefresh(player, orderId, order);
+                player.playSound(player.getLocation(), Sound.UI_BUTTON_CLICK, 1.0f, 1.2f);
+            } catch (NumberFormatException e) {
+                getLogger().warning("Ошибка парсинга числа: " + name);
+            }
+            return;
+        }
+
+        // Кнопки -
+        if (name.startsWith("-")) {
+            try {
+                int value = Integer.parseInt(name.substring(1));
+                int current = selectedAmount.getOrDefault(player.getUniqueId(), 0);
+                int newAmount = Math.max(1, current - value);
+                selectedAmount.put(player.getUniqueId(), newAmount);
+                openSellToOrderMenuRefresh(player, orderId, order);
+                player.playSound(player.getLocation(), Sound.UI_BUTTON_CLICK, 1.0f, 0.8f);
+            } catch (NumberFormatException e) {
+                getLogger().warning("Ошибка парсинга числа: " + name);
+            }
+            return;
+        }
+
+        // Продать максимум
+        if (name.contains("Продать максимум")) {
+            double playerPraims = getPraims(player);
+            int maxCanSell = (int)Math.min(order.amount, playerPraims);
+            if (maxCanSell > 0) {
+                selectedAmount.put(player.getUniqueId(), maxCanSell);
+                executeSellToOrder(player, orderId, order, maxCanSell);
+            }
+            return;
+        }
+
+        // Продать
+        if (name.contains("Продать праймы")) {
+            int amount = selectedAmount.getOrDefault(player.getUniqueId(), 1);
+            executeSellToOrder(player, orderId, order, amount);
+        }
+    }
+
+    private void openSellToOrderMenuRefresh(Player player, UUID orderId, Order order) {
+        Inventory inv = player.getOpenInventory().getTopInventory();
+        fillSellToOrderMenu(inv, player, order);
+    }
+
+    private void executeSellToOrder(Player player, UUID orderId, Order order, int amount) {
+        if (amount <= 0 || amount > order.amount) {
+            player.sendMessage("§cНекорректное количество!");
+            return;
+        }
+
+        double totalReward = amount * order.rate;
+
+        if (getPraims(player) < amount) {
+            player.sendMessage("§c§l✗ Недостаточно праймов!");
+            player.playSound(player.getLocation(), Sound.ENTITY_VILLAGER_NO, 1.0f, 1.0f);
+            return;
+        }
+
+        // Списываем праймы у продавца
+        takePraims(player, amount);
+
+        // Даем монетки продавцу
+        economy.depositPlayer(player, totalReward);
+
+        // Обновляем заявку
+        if (amount >= order.amount) {
+            // Заявка полностью выполнена
+            Player buyer = Bukkit.getPlayer(order.owner);
+            if (buyer != null && buyer.isOnline()) {
+                givePraims(buyer, (int)order.amount);
+                buyer.sendMessage("§a§l✓ Ваша заявка на покупку выполнена!");
+                buyer.sendMessage("§7Куплено: §e" + formatNumber(order.amount) + " праймов");
+                buyer.sendMessage("§7Потрачено: §b" + formatNumber(totalReward) + " монеток");
+                buyer.playSound(buyer.getLocation(), Sound.ENTITY_PLAYER_LEVELUP, 1.0f, 1.5f);
+            }
+            activeOrders.remove(orderId);
+        } else {
+            // Частичное выполнение
+            order.amount -= amount;
+            Player buyer = Bukkit.getPlayer(order.owner);
+            if (buyer != null && buyer.isOnline()) {
+                givePraims(buyer, amount);
+                buyer.sendMessage("§e§l⚡ Частичная покупка!");
+                buyer.sendMessage("§7Куплено: §e" + formatNumber(amount) + " праймов");
+                buyer.sendMessage("§7Потрачено: §b" + formatNumber(totalReward) + " монеток");
+                buyer.sendMessage("§7Осталось купить: §e" + formatNumber(order.amount) + " праймов");
+                buyer.playSound(buyer.getLocation(), Sound.BLOCK_NOTE_BLOCK_PLING, 1.0f, 1.5f);
+            }
+        }
+
+        saveOrders();
+
+        // Сообщение продавцу
+        player.sendMessage("");
+        player.sendMessage("§a§l✓ ПРОДАЖА УСПЕШНА!");
+        player.sendMessage("§7Продано: §e" + formatNumber(amount) + " праймов");
+        player.sendMessage("§7Получено: §b" + formatNumber(totalReward) + " монеток");
+        player.sendMessage("");
+        player.playSound(player.getLocation(), Sound.ENTITY_PLAYER_LEVELUP, 1.0f, 2.0f);
+
+        // Очищаем данные и возвращаем в меню
+        selectedAmount.remove(player.getUniqueId());
+        selectedOrder.remove(player.getUniqueId());
+        openMainMenu(player);
+    }
+
+    // ==================== МЕНЮ СОЗДАНИЯ ЗАЯВОК ====================
 
     private void openPurchaseMenu(Player player) {
         Inventory inv = Bukkit.createInventory(null, 54, "§b§lСоздать заявку на покупку");
@@ -780,6 +1066,11 @@ public final class BirjaHW extends JavaPlugin implements CommandExecutor, Listen
                         "",
                         "§c§l✖ ЛКМ §7- Отменить заявку");
 
+                // Сохраняем ID заявки
+                ItemMeta meta = item.getItemMeta();
+                meta.getPersistentDataContainer().set(orderIdKey, PersistentDataType.STRING, entry.getKey().toString());
+                item.setItemMeta(meta);
+
                 inv.setItem(slot, item);
                 slot++;
                 if (slot % 9 == 7) slot += 4; // Переход на следующую строку
@@ -806,6 +1097,7 @@ public final class BirjaHW extends JavaPlugin implements CommandExecutor, Listen
 
         // Проверяем наши меню
         if (!title.equalsIgnoreCase("ВЫБОР КОЛИЧЕСТВА ДЛЯ ПОКУПКИ")
+                && !title.equalsIgnoreCase("ВЫБОР КОЛИЧЕСТВА ДЛЯ ПРОДАЖИ")
                 && !title.equalsIgnoreCase("СОЗДАТЬ ЗАЯВКУ НА ПОКУПКУ")
                 && !title.equalsIgnoreCase("СОЗДАТЬ ЗАЯВКУ НА ПРОДАЖУ")
                 && !title.equalsIgnoreCase("БИРЖА ПРАЙМОВ")
@@ -824,6 +1116,11 @@ public final class BirjaHW extends JavaPlugin implements CommandExecutor, Listen
         // Роутинг по меню
         if (title.equalsIgnoreCase("ВЫБОР КОЛИЧЕСТВА ДЛЯ ПОКУПКИ")) {
             handlePurchaseAmountMenuClick(player, item);
+            return;
+        }
+
+        if (title.equalsIgnoreCase("ВЫБОР КОЛИЧЕСТВА ДЛЯ ПРОДАЖИ")) {
+            handleSellToOrderMenuClick(player, item);
             return;
         }
 
@@ -874,50 +1171,64 @@ public final class BirjaHW extends JavaPlugin implements CommandExecutor, Listen
     }
 
     private void handleOrderClick(Player player, ItemStack item) {
-        // Ищем заявку по предмету
         if (!item.hasItemMeta()) return;
-        
-        String displayName = item.getItemMeta().getDisplayName();
-        if (displayName == null || !displayName.contains("Заявка #")) return;
 
-        // Находим заявку
-        int slot = -1;
-        for (int i = 0; i < 36; i++) {
-            if (player.getOpenInventory().getTopInventory().getItem(i) != null &&
-                player.getOpenInventory().getTopInventory().getItem(i).equals(item)) {
-                slot = i;
-                break;
+        ItemMeta meta = item.getItemMeta();
+        if (meta == null) return;
+
+        // Пробуем получить ID заявки из PersistentDataContainer
+        PersistentDataContainer container = meta.getPersistentDataContainer();
+        String orderIdStr = container.get(orderIdKey, PersistentDataType.STRING);
+
+        if (orderIdStr == null) {
+            // Fallback: ищем по имени предмета
+            String displayName = meta.getDisplayName();
+            if (displayName == null || !displayName.contains("Заявка #")) return;
+
+            // Находим заявку по слоту
+            int slot = -1;
+            for (int i = 0; i < 36; i++) {
+                ItemStack slotItem = player.getOpenInventory().getTopInventory().getItem(i);
+                if (slotItem != null && slotItem.equals(item)) {
+                    slot = i;
+                    break;
+                }
+            }
+
+            if (slot == -1) return;
+
+            List<Map.Entry<UUID, Order>> orders = getSortedOrders();
+            if (slot >= orders.size()) return;
+
+            Map.Entry<UUID, Order> entry = orders.get(slot);
+            processOrderInteraction(player, entry.getKey(), entry.getValue());
+        } else {
+            UUID orderId = UUID.fromString(orderIdStr);
+            Order order = activeOrders.get(orderId);
+            if (order != null) {
+                processOrderInteraction(player, orderId, order);
+            } else {
+                player.sendMessage("§cЗаявка больше не существует!");
+                openMainMenu(player);
             }
         }
+    }
 
-        if (slot == -1) return;
-
-        // Получаем заявку по порядку
-        List<Map.Entry<UUID, Order>> orders = activeOrders.entrySet().stream()
-                .sorted((a, b) -> Long.compare(b.getValue().timestamp, a.getValue().timestamp))
-                .limit(36)
-                .collect(Collectors.toList());
-
-        if (slot >= orders.size()) return;
-
-        Map.Entry<UUID, Order> entry = orders.get(slot);
-        Order order = entry.getValue();
-        UUID orderId = entry.getKey();
-
+    private void processOrderInteraction(Player player, UUID orderId, Order order) {
         // Проверяем, не своя ли это заявка
         if (order.owner.equals(player.getUniqueId())) {
             openMyOrdersMenu(player);
             return;
         }
 
-        // Если это заявка на продажу - открываем меню выбора количества
+        // Если это заявка на продажу (SELL) - покупаем праймы
         if (order.type == OrderType.SELL) {
             openPurchaseAmountMenu(player, orderId, order);
             player.playSound(player.getLocation(), Sound.UI_BUTTON_CLICK, 1.0f, 1.0f);
         } else {
-            // Заявка на покупку - пока просто информация
-            player.sendMessage("§eЭто заявка на покупку. Вы не можете купить из неё.");
-            player.playSound(player.getLocation(), Sound.ENTITY_VILLAGER_NO, 1.0f, 1.0f);
+            // Заявка на покупку (BUY) - продаем праймы
+            openSellToOrderMenu(player, orderId, order);
+            player.playSound(player.getLocation(), Sound.UI_BUTTON_CLICK, 1.0f, 1.0f);
         }
     }
 
@@ -928,26 +1239,32 @@ public final class BirjaHW extends JavaPlugin implements CommandExecutor, Listen
             return;
         }
 
-        if ((item.getType() == Material.PAPER || item.getType() == Material.BARRIER)
-                && item.hasItemMeta()
-                && item.getItemMeta().hasDisplayName()) {
+        if (item.getType() != Material.PAPER && item.getType() != Material.BARRIER) return;
+        if (!item.hasItemMeta()) return;
 
-            String name = ChatColor.stripColor(item.getItemMeta().getDisplayName());
-            String amountStr = name.replaceAll("[^0-9]", "");
+        ItemMeta meta = item.getItemMeta();
+        if (meta == null) return;
 
+        // Получаем сумму из PersistentDataContainer
+        PersistentDataContainer container = meta.getPersistentDataContainer();
+        Double amount = container.get(amountKey, PersistentDataType.DOUBLE);
+
+        if (amount == null) {
+            // Fallback: парсим из имени
+            String name = ChatColor.stripColor(meta.getDisplayName());
             try {
-                int praimsAmount = Integer.parseInt(amountStr);
-
-                if (praimsAmount <= 0) return;
-
-                double rate = calculateRate();
-                createBuyOrder(player, praimsAmount, rate);
-                openMainMenu(player);
-
-            } catch (NumberFormatException ex) {
+                amount = parseFormattedNumber(name);
+            } catch (Exception e) {
                 player.sendMessage("§cОшибка обработки количества!");
+                return;
             }
         }
+
+        if (amount <= 0) return;
+
+        double rate = calculateRate();
+        createBuyOrder(player, amount.intValue(), rate);
+        openMainMenu(player);
     }
 
     private void handleSellMenuClick(Player player, ItemStack item) {
@@ -957,20 +1274,31 @@ public final class BirjaHW extends JavaPlugin implements CommandExecutor, Listen
             return;
         }
 
-        if ((item.getType() == Material.WRITABLE_BOOK || item.getType() == Material.BARRIER) && item.hasItemMeta()) {
-            String name = ChatColor.stripColor(item.getItemMeta().getDisplayName());
-            String amountStr = name.replaceAll("[^0-9.]", "");
+        if (item.getType() != Material.WRITABLE_BOOK && item.getType() != Material.BARRIER) return;
+        if (!item.hasItemMeta()) return;
 
+        ItemMeta meta = item.getItemMeta();
+        if (meta == null) return;
+
+        // Получаем сумму из PersistentDataContainer
+        PersistentDataContainer container = meta.getPersistentDataContainer();
+        Double amount = container.get(amountKey, PersistentDataType.DOUBLE);
+
+        if (amount == null) {
+            // Fallback: парсим из имени
+            String name = ChatColor.stripColor(meta.getDisplayName());
             try {
-                double praimsAmount = parseFormattedNumber(amountStr);
-                if (praimsAmount > 0) {
-                    createSellOrder(player, praimsAmount);
-                    openMainMenu(player);
-                }
-            } catch (Exception ex) {
-                player.sendMessage("§cОшибка обработки суммы!");
+                amount = parseFormattedNumber(name);
+            } catch (Exception e) {
+                player.sendMessage("§cОшибка обработки количества!");
+                return;
             }
         }
+
+        if (amount <= 0) return;
+
+        createSellOrder(player, amount);
+        openMainMenu(player);
     }
 
     private void handleMyOrdersClick(Player player, ItemStack item) {
@@ -981,7 +1309,20 @@ public final class BirjaHW extends JavaPlugin implements CommandExecutor, Listen
         }
 
         if (item.getType() == Material.EMERALD_BLOCK || item.getType() == Material.DIAMOND_BLOCK) {
-            cancelPlayerOrder(player);
+            if (!item.hasItemMeta()) return;
+
+            ItemMeta meta = item.getItemMeta();
+            if (meta == null) return;
+
+            PersistentDataContainer container = meta.getPersistentDataContainer();
+            String orderIdStr = container.get(orderIdKey, PersistentDataType.STRING);
+
+            if (orderIdStr != null) {
+                UUID orderId = UUID.fromString(orderIdStr);
+                cancelSpecificOrder(player, orderId);
+            } else {
+                cancelPlayerOrder(player);
+            }
             openMyOrdersMenu(player);
         }
     }
@@ -989,7 +1330,7 @@ public final class BirjaHW extends JavaPlugin implements CommandExecutor, Listen
     @EventHandler
     public void onInventoryClose(InventoryCloseEvent e) {
         menuType.remove(e.getPlayer().getUniqueId());
-        selectedBuyAmount.remove(e.getPlayer().getUniqueId());
+        selectedAmount.remove(e.getPlayer().getUniqueId());
         selectedOrder.remove(e.getPlayer().getUniqueId());
     }
 
@@ -1016,6 +1357,10 @@ public final class BirjaHW extends JavaPlugin implements CommandExecutor, Listen
         ItemMeta meta = item.getItemMeta();
         meta.setDisplayName((canAfford ? "§e" : "§c") + formatNumber(praims));
         meta.setLore(lore);
+
+        // Сохраняем оригинальное значение
+        meta.getPersistentDataContainer().set(amountKey, PersistentDataType.DOUBLE, praims);
+
         item.setItemMeta(meta);
 
         return item;
@@ -1042,6 +1387,10 @@ public final class BirjaHW extends JavaPlugin implements CommandExecutor, Listen
         ItemMeta meta = item.getItemMeta();
         meta.setDisplayName((canAfford ? "§e" : "§c") + formatNumber(praims));
         meta.setLore(lore);
+
+        // Сохраняем оригинальное значение
+        meta.getPersistentDataContainer().set(amountKey, PersistentDataType.DOUBLE, praims);
+
         item.setItemMeta(meta);
 
         return item;
@@ -1164,7 +1513,29 @@ public final class BirjaHW extends JavaPlugin implements CommandExecutor, Listen
         activeOrders.remove(orderToCancel);
 
         if (order.type == OrderType.SELL) {
-            givePraims(player, order.amount);
+            givePraims(player, (int)order.amount);
+            player.sendMessage("§a§l✓ Заявка отменена! Возвращено: §e" + formatNumber(order.amount) + " праймов");
+        } else {
+            double moneyToReturn = order.amount * order.rate;
+            economy.depositPlayer(player, moneyToReturn);
+            player.sendMessage("§a§l✓ Заявка отменена! Возвращено: §b" + formatNumber(moneyToReturn) + " монеток");
+        }
+
+        saveOrders();
+        player.playSound(player.getLocation(), Sound.BLOCK_NOTE_BLOCK_PLING, 1.0f, 1.0f);
+    }
+
+    private void cancelSpecificOrder(Player player, UUID orderId) {
+        Order order = activeOrders.get(orderId);
+        if (order == null || !order.owner.equals(player.getUniqueId())) {
+            player.sendMessage("§c§l✗ Заявка не найдена!");
+            return;
+        }
+
+        activeOrders.remove(orderId);
+
+        if (order.type == OrderType.SELL) {
+            givePraims(player, (int)order.amount);
             player.sendMessage("§a§l✓ Заявка отменена! Возвращено: §e" + formatNumber(order.amount) + " праймов");
         } else {
             double moneyToReturn = order.amount * order.rate;
